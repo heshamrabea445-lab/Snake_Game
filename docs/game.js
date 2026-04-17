@@ -285,7 +285,8 @@ class SnakeWeb {
     this.fsRect = null;
     this.volRect = null;
     this.playButtonRect = null;
-    this.highScore = this.loadHighScore();
+    this.clearStoredHighScore();
+    this.highScore = 0;
     this.trophyUnlockedAfterRestart = false;
     this.audioMuted = false;
     this.audioUnlocked = false;
@@ -314,21 +315,21 @@ class SnakeWeb {
     return performance.now();
   }
 
-  loadHighScore() {
+  clearStoredHighScore() {
     try {
-      const raw = window.sessionStorage.getItem("snake-high-score");
-      return raw ? Math.max(0, parseInt(raw, 10) || 0) : 0;
+      window.sessionStorage.removeItem("snake-high-score");
     } catch {
-      return 0;
+      // Ignore file:// storage failures.
+    }
+    try {
+      window.localStorage.removeItem("snake-high-score");
+    } catch {
+      // Ignore file:// storage failures.
     }
   }
 
   saveHighScore() {
-    try {
-      window.sessionStorage.setItem("snake-high-score", String(this.highScore));
-    } catch {
-      // Ignore file:// storage failures.
-    }
+    // Browser high score is in-memory only.
   }
 
   bindEvents() {
