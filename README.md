@@ -45,27 +45,15 @@ If you want to play the full desktop version, download the latest Windows releas
 
 ### Requirements
 
-- Python 3.13+
+- Python 3.13
+- `pip`
 - A desktop environment that can open a Pygame window
 
 ### Install
 
-```bash
-python -m venv .venv
-```
-
-Windows:
+If your interpreter is already set to Python 3.13, you can run the game without creating a virtual environment:
 
 ```bash
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-macOS / Linux:
-
-```bash
-source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
@@ -74,6 +62,26 @@ pip install -r requirements.txt
 
 ```bash
 python main.py
+```
+
+### Optional: use a virtual environment
+
+Windows:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+macOS / Linux:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
 ## Download the Windows Build
