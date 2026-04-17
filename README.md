@@ -6,28 +6,31 @@ A polished desktop take on Snake built with Python and Pygame, with animated UI,
 
 ![Snake demo](media/snake-demo.gif)
 
-[Instant Preview](#instant-preview) • [Download Windows Build](https://github.com/heshamrabea445-lab/Snake_Game/releases/latest) • [Run Locally](#run-locally)
+[Instant Preview](#instant-preview) | [Play in Browser](https://heshamrabea445-lab.github.io/Snake_Game/) | [Download Windows Build](https://github.com/heshamrabea445-lab/Snake_Game/releases/latest) | [Run From Source](#run-from-source)
 
 ## Instant Preview
 
-The GIF above is the no-download version of the project: you can see the current gameplay, UI, and feel of the game directly from the repository page.
+The GIF above shows the current launch flow and movement directly from the repository page.
 
-If you want to play the full desktop version, download the latest Windows release or run it locally with Python.
+If you just want to play, use the Windows release ZIP. Running from source is mainly for developers who want the Python version.
 
-## Why This Project Stands Out
+The live browser version runs on GitHub Pages. GitHub can link to that page from the README, but it cannot embed the live game inline inside the README itself.
 
-- Smooth animated starter card flow instead of a bare launch screen
-- Polished snake presentation with mouth, tongue, eye, death, and collision effects
-- Audio feedback for turns and collisions
-- Deferred asset loading for a faster-feeling startup
-- Freeze-ready asset loading so the same code works locally and in a packaged Windows build
-- Automated validation and Windows release packaging through GitHub Actions
+## Highlights
+
+- Smooth continuous movement with buffered turns instead of tile-by-tile snapping
+- Smooth starter card and waiting cue flow instead of a bare launch screen
+- Expressive snake presentation with mouth, tongue, eye, death, and collision effects
+- Turn, eat, and collision audio feedback
+- Fast two-step boot path that gets the first frame on screen quickly
+- Asset loading that works both from source and from packaged Windows builds
+- GitHub Actions validation and Windows release packaging
 
 ## Screenshots
 
 ![Starter card](media/snake-launch.png)
 
-![Gameplay](media/snake-gameplay.png)
+![Waiting screen](media/snake-waiting.png)
 
 ## Controls
 
@@ -41,33 +44,49 @@ If you want to play the full desktop version, download the latest Windows releas
 | Toggle mute | Click volume icon |
 | Quit | `Esc` or click `X` |
 
-## Run Locally
+## Download the Windows Build
 
-### Requirements
+The Windows ZIP is the easiest way to play.
+
+### `snake-game-windows.zip`
+
+1. Open the [latest release](https://github.com/heshamrabea445-lab/Snake_Game/releases/latest)
+2. Download `snake-game-windows.zip`
+3. Extract the ZIP
+4. Open the extracted `Snake_Game` folder
+5. Launch `Snake Game.exe`, or run `Install Shortcuts.ps1` to create Start Menu and Desktop shortcuts
+
+Important:
+- Keep `Snake Game.exe` inside the extracted `Snake_Game` folder with its `_internal` directory
+- Use this build for normal Windows play, Start Menu shortcuts, and taskbar pinning
+- Do not run the intermediate executable from `build/`; that folder is only a temporary packaging artifact
+
+## Run From Source
+
+This path assumes you already have Python installed.
 
 - Python 3.13+
 - A desktop environment that can open a Pygame window
+- If you do not already have Python and only want to play, use the Windows ZIP above instead
+- If you need Python for development, use the official installer from [python.org](https://www.python.org/downloads/) instead of linking directly to a raw `python.exe`
 
-### Install
+### Install dependencies
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Optional virtual environment
 
 ```bash
 python -m venv .venv
-```
 
-Windows:
-
-```bash
+# Windows
 .venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
 
-macOS / Linux:
-
-```bash
+# macOS / Linux
 source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
 ```
 
 ### Start the game
@@ -76,20 +95,11 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Download the Windows Build
-
-The Windows release is distributed as a ZIP bundle through GitHub Releases.
-
-1. Open the [latest release](https://github.com/heshamrabea445-lab/Snake_Game/releases/latest)
-2. Download `snake-game-windows.zip`
-3. Extract the ZIP
-4. Launch `Snake.exe`
-
 ## Technical Highlights
 
 - Single-file game architecture with structured helper sections for startup, assets, input, animation, and rendering
 - Packaged asset loading that supports both source execution and frozen builds
-- Headless smoke test coverage for startup and deferred asset loading
+- Headless smoke test coverage for boot, starter card flow, and core runtime assets
 - GitHub Actions workflows for validation and Windows release packaging
 - One-folder PyInstaller build for a more reliable Windows distribution
 
@@ -97,15 +107,16 @@ The Windows release is distributed as a ZIP bundle through GitHub Releases.
 
 ```text
 Snake_Game/
-├── audio/                  # Sound effects and music assets
-├── images/                 # UI and board image assets
-├── media/                  # README GIF and screenshots
-├── scripts/                # Validation utilities
-├── sprites/                # Character and effect sprite sheets
-├── .github/workflows/      # CI and release automation
-├── main.py                 # Game entry point
-├── requirements.txt        # Runtime dependency
-└── snake_game.spec         # Windows packaging definition
+|-- audio/                  # Sound effects and music assets
+|-- docs/                   # GitHub Pages browser version
+|-- images/                 # UI and board image assets
+|-- media/                  # README GIF and screenshots
+|-- scripts/                # Validation and Windows packaging utilities
+|-- sprites/                # Character and effect sprite sheets
+|-- .github/workflows/      # CI and release automation
+|-- main.py                 # Game entry point
+|-- requirements.txt        # Runtime dependency
+`-- snake_game.spec         # Windows packaging definition
 ```
 
 ## Validation
@@ -115,6 +126,12 @@ To run the lightweight local validation pass:
 ```bash
 python -m py_compile main.py
 python scripts/smoke_test.py
+```
+
+To rebuild the Windows release artifact locally:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package_windows.ps1
 ```
 
 ## License

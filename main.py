@@ -1,9 +1,11 @@
 import pygame
 import random
+import os
 from collections import deque
 import math
 from pathlib import Path
 import sys
+import ctypes
 
 
 # ── Base design resolution ─────────────────────────────────────────────────────
@@ -34,6 +36,11 @@ COLLISION_EFFECT_FRAME_COUNT = 21
 COLLISION_EFFECT_SPEED_MULT = 2.5
 COLLISION_EFFECT_ANCHOR_FWD = -1.2
 COLLISION_EFFECT_EXTRA_ROT_DEG = 180
+COLLISION_SHAKE_DURATION_MS = 520
+COLLISION_SHAKE_AMPLITUDE_TILES = 0.22
+COLLISION_SHAKE_X_CYCLES = 9.0
+COLLISION_SHAKE_Y_CYCLES = 13.0
+BOARD_BORDER_STROKE_BASE = 2
 STARTER_CARD_BASE_W = 310
 STARTER_CARD_BUTTON_GAP = 12
 STARTER_CARD_STAT_LEFT_X = 0.29
@@ -47,15 +54,17 @@ WAITING_CUE_BOX_ALPHA = 150
 WAITING_CUE_BOX_RADIUS = 16
 WAITING_CUE_CENTER_Y_RATIO = 0.24
 DEATH_FACE_FRAME_COUNT = 36
-DEATH_FACE_SCALE = 1.0
+DEATH_FACE_SCALE = 1.08
 DEATH_FACE_SEPARATOR_W = 1
 DEATH_FACE_RECOIL_START_FRAME = 6
 DEATH_FACE_TWITCH_START_FRAME = 17
 DEATH_FACE_TWITCH_FRAME_MS = 75
 DEATH_FACE_PRE_TWITCH_ANCHOR = -0.05
 DEATH_FACE_TWITCH_ANCHOR = -0.27
+DEATH_FACE_ANCHOR_BACK_SHIFT = -0.03
 DEATH_FACE_TWITCH_BLEND_FRAMES = 17
 DEATH_FACE_FRAME_LIFT = -0.10
+DEATH_FACE_UP_COLLISION_Y_NUDGE_TILES = 0.06
 AUDIO_MIXER_FREQUENCY = 44100
 AUDIO_MIXER_SIZE = -16
 AUDIO_MIXER_CHANNELS = 2
@@ -64,6 +73,7 @@ TURN_SFX_STACK_CHANNELS = 4
 COLLISION_SFX_CHANNEL_INDEX = TURN_SFX_STACK_CHANNELS
 AUDIO_RESERVED_CHANNELS = TURN_SFX_STACK_CHANNELS + 1
 TURN_SFX_VOLUME = 0.35
+EAT_SFX_VOLUME = 0.45
 COLLISION_SFX_VOLUME = 0.75
 # ── Colours ───────────────────────────────────────────────────────────────────
 HEADER_COLOUR  = ( 78, 112,  50)
@@ -90,6 +100,7 @@ TONGUE_SHADOW_SCALE = 0.88
 TONGUE_SHADOW_ALPHA = 40
 TONGUE_SHADOW_YOFF_FACTOR = 0.16
 TONGUE_BASE_OFFSET = 0.42
+EYE_SCALE = 1.15
 EYE_CENTER_FWD = -0.45
 EYE_CENTER_SIDE = 0.00
 EYE_SEPARATION = 0.32
@@ -106,10 +117,11 @@ BULGE_MIN_END_SCALE = 1.00
 BULGE_SHADOW_ALPHA = 34
 BULGE_END_HIDE_T = 0.96
 BULGE_SPAWN_DELAY_FRAMES = 4
-BULGE_TRAVEL_SEG_PER_TICK = 1
+BULGE_TRAVEL_SEG_PER_TICK = 0.70
 BULGE_FADE_SEGMENTS_CAP = 25 
 BULGE_MIN_VISIBLE_SCALE = 1.
 BULGE_SAMPLE_STEP_FACTOR = 0.40
+GROWTH_REVEAL_TILES_PER_TILE = 0.90
 FACE_SHADOW_ALPHA = 38
 FACE_SHADOW_YOFF_FACTOR = 0.55
 MOUTH_SHADOW_SCALE = 0.95
@@ -187,18 +199,14 @@ def draw_capsule(surface, colour, c1, c2, radius):
 class SnakeGame:
 
     def __init__(self):
-        pygame.mixer.pre_init(
-            AUDIO_MIXER_FREQUENCY,
-            AUDIO_MIXER_SIZE,
-            AUDIO_MIXER_CHANNELS,
-            AUDIO_MIXER_BUFFER,
-        )
-        pygame.init()
+        # Bring up just enough pygame state to paint the first frame quickly.
+        # Audio comes up immediately after that first visible frame.
+        pygame.display.init()
+        pygame.font.init()
         self.base_dir = self._resolve_asset_root()
         self._configure_window()
         self._init_runtime_state()
-        self._init_deferred_loading()
-        self._bootstrap_launch_screen()
+        self._bootstrap_game()
         self._main_loop()
 
     # ── Startup ───────────────────────────────────────────────────────────────
@@ -206,8 +214,14 @@ class SnakeGame:
         self.window = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
         pygame.display.set_caption("Snake")
         self.clock = pygame.time.Clock()
+        self._set_window_icon()
 
     def _init_runtime_state(self):
+        self._init_ui_state()
+        self._init_asset_state()
+        self._init_audio_state()
+
+    def _init_ui_state(self):
         self.cursor_hand = pygame.SYSTEM_CURSOR_HAND
         self.cursor_default = pygame.SYSTEM_CURSOR_ARROW
         self.high_score = 0
@@ -215,9 +229,9 @@ class SnakeGame:
         self.x_rect = None
         self.fs_rect = None
         self.vol_rect = None
-        self.play_button_rect = None
-        self._last_fs_toggle_ms = 0
+        self._reset_overlay_state()
 
+    def _init_asset_state(self):
         self._last_scale = None
         self._last_win_size = None
         self._scaled_assets = {}
@@ -236,7 +250,9 @@ class SnakeGame:
         self.death_face_frames = []
         self.collision_effect_frames = []
 
+    def _init_audio_state(self):
         self.turn_sound = None
+        self.eat_sound = None
         self.collision_sound = None
         self.turn_channels = []
         self.next_turn_channel_idx = 0
@@ -244,48 +260,31 @@ class SnakeGame:
         self._audio_initialized = False
         self.audio_muted = False
 
-        self.starter_card_visible = False
-        self.starter_card_context = None
-        self.starter_card_reveal_ms = None
-        self.starter_card_run_score = 0
-        self.show_waiting_start_cue = False
-        self._deferred_tasks_started = False
-
-    def _init_deferred_loading(self):
-        self._startup_raw_keys = (
-            "tile_light",
-            "tile_dark",
-            "trophy",
-            "apple_icon",
-            "snake_card",
-            "play_button",
-            "x",
-            "full_screen",
-            "volume",
-        )
-        self._deferred_startup_tasks = deque([
-            lambda: self._load_raw_images(("start_box",)),
-            lambda: self._load_raw_images(("not_full_screen",)),
-            lambda: self._load_raw_images(("volume_muted",)),
-            self._set_window_icon,
-            self._init_audio,
-        ])
-        self._lazy_animation_loaders = {
-            "mouth": self._load_mouth_frames,
-            "eyes": self._load_eye_frames,
-            "tongue": self._load_tongue_frames,
-            "death_face": self._load_death_face_frames,
-            "collision_effect": self._load_collision_effect_frames,
-        }
-        self._lazy_animation_queue = deque(self._lazy_animation_loaders)
-        self._lazy_animation_pending = set(self._lazy_animation_loaders)
-
-    def _bootstrap_launch_screen(self):
-        self._load_raw_images(self._startup_raw_keys)
+    def _bootstrap_game(self):
+        # Phase 1 - draw the launch screen as soon as the window is ready.
+        self._load_startup_assets()
         self.new_game()
         self._show_starter_card("launch", run_score=0)
         self._ensure_assets()
         self._draw()
+
+        # Phase 2 - finish loading the remaining runtime assets.
+        self._load_remaining_assets()
+        if self._last_scale is not None:
+            self._refresh_scaled_animation_assets(self._last_scale)
+
+    def _load_startup_assets(self):
+        """Load assets required for the first visible frame (tiles, UI, mouth, eyes)."""
+        self._load_raw_images()
+        self._load_mouth_frames()
+        self._load_eye_frames()
+
+    def _load_remaining_assets(self):
+        """Load assets needed after the first frame is already on screen."""
+        self._load_tongue_frames()
+        self._load_death_face_frames()
+        self._load_collision_effect_frames()
+        self._init_audio()
 
     # ── Assets ────────────────────────────────────────────────────────────────
     def _resolve_asset_root(self):
@@ -319,13 +318,23 @@ class SnakeGame:
         self.starter_card_run_score = max(0, int(run_score))
         self.starter_card_reveal_ms = reveal_ms
         self.starter_card_visible = reveal_ms is None
+        self.show_waiting_start_cue = False
         self.play_button_rect = None
 
     def _hide_starter_card(self):
+        self._reset_overlay_state(keep_waiting_cue=self.show_waiting_start_cue)
+
+    def _reset_overlay_state(self, *, keep_waiting_cue=False):
+        self.play_button_rect = None
         self.starter_card_visible = False
         self.starter_card_context = None
         self.starter_card_reveal_ms = None
-        self.play_button_rect = None
+        self.starter_card_run_score = 0
+        self.show_waiting_start_cue = keep_waiting_cue
+
+    def _show_waiting_start_cue(self):
+        self.show_waiting_start_cue = True
+        self._hide_starter_card()
 
     def _refresh_starter_card_visibility(self):
         if self.starter_card_visible or self.starter_card_reveal_ms is None:
@@ -340,10 +349,9 @@ class SnakeGame:
             return False
 
         now = pygame.time.get_ticks()
-        self._ensure_lazy_animations("mouth", "eyes", "tongue")
         self.show_waiting_start_cue = False
         self.game_state = "playing"
-        self.last_tick_ms = now
+        self.last_frame_ms = now
         self.direction = start_dir
         self.next_dir = self.direction
         self.start_move_locked = True
@@ -361,97 +369,73 @@ class SnakeGame:
         if context == "death":
             self.new_game()
             return
-        self._ensure_raw_images("start_box")
-        self.show_waiting_start_cue = True
-        self._hide_starter_card()
+        self._show_waiting_start_cue()
 
     def _set_window_icon(self):
         try:
-            pygame.display.set_icon(
-                pygame.image.load(self._asset_path("images", "snake_icon.png"))
-            )
+            icon_png = self._asset_path("images", "snake_icon.png")
+            icon_ico = self._asset_path("images", "snake_icon.ico")
+            pygame.display.set_icon(pygame.image.load(icon_png))
+            if sys.platform == "win32":
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("heshamrabea.snakegame")
+                hwnd = pygame.display.get_wm_info().get("window")
+                if hwnd:
+                    image_icon = 1
+                    icon_small = 0
+                    icon_big = 1
+                    wm_seticon = 0x0080
+                    load_flags = 0x00000010 | 0x00000040
+                    hicon = ctypes.windll.user32.LoadImageW(None, icon_ico, image_icon, 0, 0, load_flags)
+                    if hicon:
+                        ctypes.windll.user32.SendMessageW(hwnd, wm_seticon, icon_small, hicon)
+                        ctypes.windll.user32.SendMessageW(hwnd, wm_seticon, icon_big, hicon)
         except Exception:
             pass
 
-    def _run_next_deferred_startup_task(self):
-        if not self._deferred_startup_tasks:
-            return False
-        task = self._deferred_startup_tasks.popleft()
-        task()
-        return True
+    def _quit_game(self):
+        pygame.quit()
+        raise SystemExit
 
-    def _ensure_audio_ready(self):
-        if not self._audio_initialized:
-            self._init_audio()
-
-    def _scale_frame_set(self, frames, scale, extra_scale=1.0):
+    def _scale_frame_set(self, frames, scale, extra_scale=1.0, smooth=True):
         scaled_frames = []
         for src in frames:
             width = max(1, int(src.get_width() * scale * extra_scale))
             height = max(1, int(src.get_height() * scale * extra_scale))
             if (width, height) == src.get_size():
                 scaled_frames.append(src)
-            else:
+            elif smooth:
                 scaled_frames.append(pygame.transform.smoothscale(src, (width, height)))
+            else:
+                scaled_frames.append(pygame.transform.scale(src, (width, height)))
         return scaled_frames
 
-    def _refresh_scaled_animation_assets(self, scale, names=None):
-        targets = set(self._lazy_animation_loaders if names is None else names)
-        if "mouth" in targets:
-            self._scaled_mouth_frames = self._scale_frame_set(self.mouth_frames, scale, MOUTH_SCALE)
-        if "tongue" in targets:
-            self._scaled_tongue_frames = self._scale_frame_set(self.snake_tongue, scale, TONGUE_SCALE)
-        if "eyes" in targets:
-            self._scaled_eye_frames = self._scale_frame_set(self.eye_frames, scale)
-        if "death_face" in targets:
-            self._scaled_death_face_frames = self._scale_frame_set(
-                self.death_face_frames,
-                scale,
-                DEATH_FACE_SCALE,
-            )
-        if "collision_effect" in targets:
-            self._scaled_collision_effect_frames = self._scale_frame_set(
-                self.collision_effect_frames,
-                scale,
-                COLLISION_EFFECT_SCALE,
-            )
-
-    def _load_lazy_animation(self, name):
-        if name not in self._lazy_animation_pending:
-            return False
-        loader = self._lazy_animation_loaders.get(name)
-        if loader is None:
-            self._lazy_animation_pending.discard(name)
-            return False
-        loader()
-        self._lazy_animation_pending.discard(name)
-        if self._last_scale is not None:
-            self._refresh_scaled_animation_assets(self._last_scale, (name,))
-        return True
-
-    def _load_next_lazy_animation(self):
-        while self._lazy_animation_queue:
-            name = self._lazy_animation_queue.popleft()
-            if self._load_lazy_animation(name):
-                return True
-        return False
-
-    def _ensure_lazy_animations(self, *names):
-        for name in names:
-            self._load_lazy_animation(name)
-
-    def _ensure_raw_images(self, *keys):
-        missing = tuple(key for key in keys if key not in self._raw)
-        if not missing:
-            return
-        self._load_raw_images(missing)
-        self._last_scale = None
+    def _refresh_scaled_animation_assets(self, scale):
+        self._scaled_mouth_frames = self._scale_frame_set(self.mouth_frames, scale, MOUTH_SCALE)
+        self._scaled_tongue_frames = self._scale_frame_set(self.snake_tongue, scale, TONGUE_SCALE)
+        self._scaled_eye_frames = self._scale_frame_set(self.eye_frames, scale, EYE_SCALE, smooth=False)
+        self._scaled_death_face_frames = self._scale_frame_set(
+            self.death_face_frames,
+            scale,
+            DEATH_FACE_SCALE,
+        )
+        self._scaled_collision_effect_frames = self._scale_frame_set(
+            self.collision_effect_frames,
+            scale,
+            COLLISION_EFFECT_SCALE,
+        )
 
     def _init_audio(self):
+        """Initialise the mixer once the window and first frame are ready."""
         if self._audio_initialized:
             return
         self._audio_initialized = True
         try:
+            pygame.mixer.pre_init(
+                AUDIO_MIXER_FREQUENCY,
+                AUDIO_MIXER_SIZE,
+                AUDIO_MIXER_CHANNELS,
+                AUDIO_MIXER_BUFFER,
+            )
             if pygame.mixer.get_init() is None:
                 pygame.mixer.init()
             pygame.mixer.set_num_channels(max(8, pygame.mixer.get_num_channels(), AUDIO_RESERVED_CHANNELS))
@@ -466,6 +450,7 @@ class SnakeGame:
             return
 
         self.turn_sound = self._load_sound("audio", "turn_sfx.mp3", volume=TURN_SFX_VOLUME)
+        self.eat_sound = self._load_sound("audio", "eating.mp3", volume=EAT_SFX_VOLUME)
         self.collision_sound = self._load_sound(
             "audio",
             "end_audio DEATH.mp3",
@@ -482,7 +467,6 @@ class SnakeGame:
         return sound
 
     def _play_turn_sfx(self):
-        self._ensure_audio_ready()
         if self.turn_sound is None or not self.turn_channels:
             return
         for channel in self.turn_channels:
@@ -493,12 +477,21 @@ class SnakeGame:
         self.next_turn_channel_idx = (self.next_turn_channel_idx + 1) % len(self.turn_channels)
 
     def _play_collision_sfx(self):
-        self._ensure_audio_ready()
         for channel in self.turn_channels:
             channel.stop()
         if self.collision_sound is None or self.collision_channel is None:
             return
         self.collision_channel.play(self.collision_sound)
+
+    def _play_eat_sfx(self):
+        if self.eat_sound is None or not self.turn_channels:
+            return
+        for channel in self.turn_channels:
+            if not channel.get_busy():
+                channel.play(self.eat_sound)
+                return
+        self.turn_channels[self.next_turn_channel_idx].play(self.eat_sound)
+        self.next_turn_channel_idx = (self.next_turn_channel_idx + 1) % len(self.turn_channels)
 
     def _stop_audio(self):
         for channel in self.turn_channels:
@@ -508,16 +501,17 @@ class SnakeGame:
 
     def _apply_audio_mute_state(self):
         turn_volume = 0.0 if self.audio_muted else TURN_SFX_VOLUME
+        eat_volume = 0.0 if self.audio_muted else EAT_SFX_VOLUME
         collision_volume = 0.0 if self.audio_muted else COLLISION_SFX_VOLUME
         if self.turn_sound is not None:
             self.turn_sound.set_volume(turn_volume)
+        if self.eat_sound is not None:
+            self.eat_sound.set_volume(eat_volume)
         if self.collision_sound is not None:
             self.collision_sound.set_volume(collision_volume)
 
     def _toggle_audio_mute(self):
         self.audio_muted = not self.audio_muted
-        if self.audio_muted:
-            self._ensure_raw_images("volume_muted")
         if self._audio_initialized:
             self._apply_audio_mute_state()
         if self.audio_muted and self._audio_initialized:
@@ -527,10 +521,59 @@ class SnakeGame:
         ww, wh = self.window.get_size()
         return min(ww / BASE_W, wh / BASE_H)
 
+    def _scale_surface(self, surf, scale, base_w, base_h=None):
+        if base_h is None:
+            base_h = base_w
+        size = (max(1, int(base_w * scale)), max(1, int(base_h * scale)))
+        if size == surf.get_size():
+            return surf
+        return pygame.transform.smoothscale(surf, size)
+
+    def _scale_surface_fit_width(self, surf, scale, base_w):
+        target_w = max(1, int(base_w * scale))
+        target_h = max(1, int(surf.get_height() * target_w / surf.get_width()))
+        size = (target_w, target_h)
+        if size == surf.get_size():
+            return surf
+        return pygame.transform.smoothscale(surf, size)
+
+    def _scale_surface_fit_box(self, surf, scale, max_w, max_h=None):
+        if max_h is None:
+            max_h = max_w
+        iw, ih = surf.get_size()
+        fit_scale = min(max_w * scale / iw, max_h * scale / ih)
+        size = (max(1, int(iw * fit_scale)), max(1, int(ih * fit_scale)))
+        if size == surf.get_size():
+            return surf
+        return pygame.transform.smoothscale(surf, size)
+
+    def _build_scaled_assets(self, scale):
+        full_screen_raw = self._raw["full_screen"]
+        full_screen_icon_bounds = self._crop_alpha_bounds(full_screen_raw)
+        volume_icon_max_h = 21
+        if full_screen_icon_bounds is not None:
+            volume_icon_max_h = full_screen_icon_bounds.get_height() + 2
+
+        return {
+            "tile_light": self._scale_surface(self._raw["tile_light"], scale, TILE_SIZE_BASE),
+            "tile_dark": self._scale_surface(self._raw["tile_dark"], scale, TILE_SIZE_BASE),
+            "trophy": self._scale_surface(self._raw["trophy"], scale, 44),
+            "apple_icon": self._scale_surface(self._raw["apple_icon"], scale, 44),
+            "apple_board": self._scale_surface(self._raw["apple_icon"], scale, TILE_SIZE_BASE),
+            "snake_card": self._scale_surface_fit_width(self._raw["snake_card"], scale, STARTER_CARD_BASE_W),
+            "play_button": self._scale_surface_fit_width(self._raw["play_button"], scale, STARTER_CARD_BASE_W),
+            "start_box": self._scale_surface_fit_width(self._raw["start_box"], scale, WAITING_CUE_ICON_BASE_W),
+            "x": self._scale_surface_fit_box(self._raw["x"], scale, 40, 40),
+            "full_screen": self._scale_surface_fit_box(full_screen_raw, scale, 40, 40),
+            "not_full_screen": self._scale_surface_fit_box(self._raw["not_full_screen"], scale, 40, 40),
+            "volume": self._scale_surface_fit_box(self._raw["volume"], scale, 40, volume_icon_max_h),
+            "volume_muted": self._scale_surface_fit_box(self._raw["volume_muted"], scale, 40, volume_icon_max_h),
+        }
+
     def _ensure_assets(self):
-        scale  = self._get_scale()
+        scale = self._get_scale()
         ww, wh = self.window.get_size()
-        size_changed  = (ww, wh) != self._last_win_size
+        size_changed = (ww, wh) != self._last_win_size
         scale_changed = scale != self._last_scale
         if not scale_changed and not size_changed:
             return
@@ -538,62 +581,31 @@ class SnakeGame:
             self._last_win_size = (ww, wh)
         if scale_changed:
             self._last_scale = scale
-            full_screen_raw = self._raw['full_screen']
-            not_full_screen_raw = self._raw.get('not_full_screen', full_screen_raw)
-            volume_raw = self._raw['volume']
-            volume_muted_raw = self._raw.get('volume_muted', volume_raw)
-            full_screen_icon_bounds = self._crop_alpha_bounds(full_screen_raw)
-            volume_icon_max_w = 40
-            volume_icon_max_h = 21
-            if full_screen_icon_bounds is not None:
-                volume_icon_max_h = full_screen_icon_bounds.get_height() + 2
-            def sc(img, base_w, base_h=None):
-                if base_h is None: base_h = base_w
-                size = (max(1, int(base_w * scale)), max(1, int(base_h * scale)))
-                if size == img.get_size():
-                    return img
-                return pygame.transform.smoothscale(img, size)
-            def sc_fit_width(img, base_w):
-                target_w = max(1, int(base_w * scale))
-                target_h = max(1, int(img.get_height() * target_w / img.get_width()))
-                size = (target_w, target_h)
-                if size == img.get_size():
-                    return img
-                return pygame.transform.smoothscale(img, size)
-            def sc_fit(img, max_w, max_h=None):
-                if max_h is None:
-                    max_h = max_w
-                iw, ih = img.get_size()
-                fit_scale = min(max_w * scale / iw, max_h * scale / ih)
-                size = (max(1, int(iw * fit_scale)), max(1, int(ih * fit_scale)))
-                if size == img.get_size():
-                    return img
-                return pygame.transform.smoothscale(img, size)
-            self._scaled_assets = {
-                'tile_light':  sc(self._raw['tile_light'],  TILE_SIZE_BASE),
-                'tile_dark':   sc(self._raw['tile_dark'],   TILE_SIZE_BASE),
-                'trophy':      sc(self._raw['trophy'],      44),
-                'apple_icon':  sc(self._raw['apple_icon'],  44),
-                'apple_board': sc(self._raw['apple_icon'],  TILE_SIZE_BASE),
-                'snake_card':  sc_fit_width(self._raw['snake_card'], STARTER_CARD_BASE_W),
-                'play_button': sc_fit_width(self._raw['play_button'], STARTER_CARD_BASE_W),
-                'x':           sc_fit(self._raw['x'],           40, 40),
-                'full_screen': sc_fit(full_screen_raw, 40, 40),
-                'not_full_screen': sc_fit(not_full_screen_raw, 40, 40),
-                'volume':      sc_fit(volume_raw, volume_icon_max_w, volume_icon_max_h),
-                'volume_muted': sc_fit(volume_muted_raw, volume_icon_max_w, volume_icon_max_h),
-            }
-            start_box_raw = self._raw.get('start_box')
-            if start_box_raw is not None:
-                self._scaled_assets['start_box'] = sc_fit_width(start_box_raw, WAITING_CUE_ICON_BASE_W)
+            self._scaled_assets = self._build_scaled_assets(scale)
             self._refresh_scaled_animation_assets(scale)
             self._rebuild_fonts(scale)
 
     def _rebuild_fonts(self, scale):
-        self.font_large  = pygame.font.SysFont("Arial", max(8, int(52 * scale)), bold=True)
-        self.font_medium = pygame.font.SysFont("Arial", max(8, int(30 * scale)), bold=True)
-        self.font_small  = pygame.font.SysFont("Arial", max(8, int(26 * scale)))
-        self.font_score  = pygame.font.SysFont("Arial", max(8, int(34 * scale)), bold=True)
+        """Build fonts at the given scale.
+
+        Using a direct file path is much faster than SysFont, which must
+        scan the entire system font registry on every call.  Falls back
+        to SysFont on non-Windows machines or if the files are missing.
+        """
+        font_path      = "C:/Windows/Fonts/arial.ttf"
+        font_bold_path = "C:/Windows/Fonts/arialbd.ttf"
+        try:
+            if not os.path.exists(font_path) or not os.path.exists(font_bold_path):
+                raise FileNotFoundError
+            self.font_large  = pygame.font.Font(font_bold_path, max(8, int(52 * scale)))
+            self.font_medium = pygame.font.Font(font_bold_path, max(8, int(30 * scale)))
+            self.font_small  = pygame.font.Font(font_path,      max(8, int(26 * scale)))
+            self.font_score  = pygame.font.Font(font_bold_path, max(8, int(34 * scale)))
+        except Exception:
+            self.font_large  = pygame.font.SysFont("Arial", max(8, int(52 * scale)), bold=True)
+            self.font_medium = pygame.font.SysFont("Arial", max(8, int(30 * scale)), bold=True)
+            self.font_small  = pygame.font.SysFont("Arial", max(8, int(26 * scale)))
+            self.font_score  = pygame.font.SysFont("Arial", max(8, int(34 * scale)), bold=True)
 
     def _layout(self):
         sc        = self._get_scale()
@@ -626,6 +638,36 @@ class SnakeGame:
             return None
         ax, ay = self.apple
         return self._cell_center(ax, ay, lay)
+
+    def _head_motion_progress(self):
+        """Return 0..1 progress from last crossed cell to the next."""
+        if self.game_state != "playing":
+            return 0.0
+        if not hasattr(self, "head_float") or not hasattr(self, "last_head_cell"):
+            return 0.0
+
+        dx, dy = self.direction
+        if dx > 0:
+            p = self.head_float[0] - self.last_head_cell[0]
+        elif dx < 0:
+            p = self.last_head_cell[0] - self.head_float[0]
+        elif dy > 0:
+            p = self.head_float[1] - self.last_head_cell[1]
+        else:
+            p = self.last_head_cell[1] - self.head_float[1]
+        return max(0.0, min(1.0, float(p)))
+
+    def _collision_shake_offset_px(self, now_ms, lay):
+        if now_ms >= self.collision_shake_end_ms:
+            return (0.0, 0.0)
+        dur = max(1, self.collision_shake_end_ms - self.collision_shake_start_ms)
+        t = max(0.0, min(1.0, (now_ms - self.collision_shake_start_ms) / dur))
+        decay = (1.0 - t) * (1.0 - t)
+        amp = lay['tile_size'] * COLLISION_SHAKE_AMPLITUDE_TILES * decay
+        phase = math.tau * t
+        sx = math.sin(phase * COLLISION_SHAKE_X_CYCLES + 0.35) * amp
+        sy = math.sin(phase * COLLISION_SHAKE_Y_CYCLES + 1.10) * amp * 0.80
+        return (sx, sy)
 
     def _dir_to_angle(self, d):
         if d == RIGHT: return 0.0
@@ -680,12 +722,24 @@ class SnakeGame:
     def _bulge_headspace_speed_px(self, tile_size):
         return (1.0 + BULGE_TRAVEL_SEG_PER_TICK) * tile_size
 
+    def _advance_growth_reveal(self, moved_tiles):
+        moved = max(0.0, float(moved_tiles))
+        if moved <= 0.0 or self.growth_hidden_tiles <= 0.0:
+            return
+        reveal = moved * GROWTH_REVEAL_TILES_PER_TILE
+        self.growth_hidden_tiles = max(0.0, self.growth_hidden_tiles - reveal)
+
     def _radius_for_segment_from_head(self, seg_from_head, base_r):
         # Keep the spawn-length body uniform; only extra grown length tapers.
         min_r = max(1, int(base_r * TAIL_MIN_RADIUS_FACTOR))
         taper_seg_from_head = max(0.0, float(seg_from_head) - float(START_SNAKE_SEGMENTS - 1))
         rr = float(base_r) - taper_seg_from_head * SEGMENT_SHRINK_PER_SEG
         return max(min_r, int(rr))
+
+    def _radius_for_arc_from_head_px(self, arc_from_head_px, tile_size, base_r):
+        ts = max(1.0, float(tile_size))
+        seg_from_head = max(0.0, float(arc_from_head_px) / ts)
+        return self._radius_for_segment_from_head(seg_from_head, base_r)
 
     def _angle_vec(self, angle_deg):
         rad = math.radians(angle_deg)
@@ -748,6 +802,7 @@ class SnakeGame:
             return self.turn_from_deg
         dur = max(1, self.turn_end_ms - self.turn_start_ms)
         t = max(0.0, min(1.0, (now_ms - self.turn_start_ms) / dur))
+        t = t * t * (3.0 - 2.0 * t)   # smoothstep easing
         self.head_angle_deg = angle_lerp_shortest(self.turn_from_deg, self.turn_to_deg, t)
         return self.head_angle_deg
 
@@ -755,8 +810,11 @@ class SnakeGame:
         self.turn_from_deg = self._current_head_angle(now_ms)
         self.turn_to_deg   = self._dir_to_angle(new_dir)
         self.turn_start_ms = now_ms
-        boundary_ms = self.last_tick_ms + TICK_RATE
-        self.turn_end_ms = boundary_ms if now_ms < boundary_ms else now_ms + TICK_RATE
+        # Duration matches the Bézier arc traversal so the head face
+        # sweeps at the same rate the body curves.
+        arc_tiles = 0.45 * 2.0          # pre + post corner radius
+        turn_ms = int(arc_tiles * 1000.0 / self.move_speed)
+        self.turn_end_ms = now_ms + max(50, turn_ms)
 
     def _offset_point(self, pt, offset_xy):
         return (pt[0] + offset_xy[0], pt[1] + offset_xy[1])
@@ -828,14 +886,18 @@ class SnakeGame:
         )
 
     def _collision_impact_head(self, kind, attempted_head):
-        if kind != "border":
-            return attempted_head
-
         dx, dy = self.direction
-        return (
-            attempted_head[0] - dx * BORDER_CONTACT_INSET_TILES,
-            attempted_head[1] - dy * BORDER_CONTACT_INSET_TILES,
-        )
+        if kind == "border":
+            return (
+                attempted_head[0] - dx * BORDER_CONTACT_INSET_TILES,
+                attempted_head[1] - dy * BORDER_CONTACT_INSET_TILES,
+            )
+        elif kind == "self":
+            return (
+                attempted_head[0] - dx * 0.6,
+                attempted_head[1] - dy * 0.6,
+            )
+        return attempted_head
 
     def _reset_recoil_path_history(self):
         self.recoil_path_history = deque(reversed(self.snake))
@@ -846,11 +908,34 @@ class SnakeGame:
         while len(self.recoil_path_history) > keep_cells:
             self.recoil_path_history.popleft()
 
-    def _snapshot_recoil_path(self):
-        retrace_path = list(self.snake)
+    def _snapshot_recoil_path_tiles(self):
+        # Build a tile-space retrace path from the current movement trail so
+        # collision recoil follows the live track instead of snapping to cells.
+        retrace_path = []
+        for i in range(len(self.body_path) - 1, -1, -1):
+            bx, by = self.body_path[i]
+            retrace_path.append((float(bx), float(by)))
+
+        # Extend with older grid history so one-tile recoil still works even on
+        # very short snakes or after rapid recent turns.
         history_path = list(reversed(self.recoil_path_history))
-        retrace_path.extend(history_path[len(self.snake):])
-        return retrace_path
+        tail_ref = retrace_path[-1] if retrace_path else None
+        start_idx = 0
+        if tail_ref is not None:
+            for i, (hx, hy) in enumerate(history_path):
+                if abs(float(hx) - tail_ref[0]) <= 1e-6 and abs(float(hy) - tail_ref[1]) <= 1e-6:
+                    start_idx = i + 1
+                    break
+        retrace_path.extend((float(hx), float(hy)) for hx, hy in history_path[start_idx:])
+
+        if not retrace_path:
+            retrace_path = [(float(self.snake[0][0]), float(self.snake[0][1]))]
+
+        compact = [retrace_path[0]]
+        for pt in retrace_path[1:]:
+            if math.hypot(pt[0] - compact[-1][0], pt[1] - compact[-1][1]) > 1e-6:
+                compact.append(pt)
+        return compact
 
     def _record_recoil_path_head(self, new_head):
         self.recoil_path_history.append(new_head)
@@ -859,39 +944,39 @@ class SnakeGame:
     def _build_recoil_points(
         self,
         lay,
-        impact_head_grid,
-        retrace_path_grid,
+        impact_head_tile,
+        retrace_path_tiles,
         visible_length,
         progress,
         *,
         tail_trim_px=0.0,
     ):
         progress = max(0.0, min(1.0, progress))
-        if not retrace_path_grid:
+        if not retrace_path_tiles:
             return [], None, self._dir_to_angle(self.direction)
-        visible_length = max(1, min(visible_length, len(retrace_path_grid)))
+        visible_length = max(1, min(visible_length, len(retrace_path_tiles)))
 
-        impact_head_px = self._cell_center(impact_head_grid[0], impact_head_grid[1], lay)
-        live_head_px = self._cell_center(retrace_path_grid[0][0], retrace_path_grid[0][1], lay)
+        impact_head_px = self._cell_center(impact_head_tile[0], impact_head_tile[1], lay)
+        live_head_px = self._cell_center(retrace_path_tiles[0][0], retrace_path_tiles[0][1], lay)
         contact_dist_px = math.hypot(
             live_head_px[0] - impact_head_px[0],
             live_head_px[1] - impact_head_px[1],
         )
-        tail_extension_tiles = COLLISION_BACKUP_TILES + (contact_dist_px / lay['tile_size'])
+        tail_extension_tiles = COLLISION_BACKUP_TILES
 
-        path_grid = [impact_head_grid] + list(retrace_path_grid)
-        if len(retrace_path_grid) >= 2:
-            tail_x, tail_y = retrace_path_grid[-1]
-            prev_x, prev_y = retrace_path_grid[-2]
+        path_tiles = [impact_head_tile] + list(retrace_path_tiles)
+        if len(retrace_path_tiles) >= 2:
+            tail_x, tail_y = retrace_path_tiles[-1]
+            prev_x, prev_y = retrace_path_tiles[-2]
             tail_step = (tail_x - prev_x, tail_y - prev_y)
             tail_extension = (
                 tail_x + tail_step[0] * tail_extension_tiles,
                 tail_y + tail_step[1] * tail_extension_tiles,
             )
         else:
-            tail_extension = retrace_path_grid[-1]
-        path_grid.append(tail_extension)
-        path_px = [self._cell_center(gx, gy, lay) for gx, gy in path_grid]
+            tail_extension = retrace_path_tiles[-1]
+        path_tiles.append(tail_extension)
+        path_px = [self._cell_center(gx, gy, lay) for gx, gy in path_tiles]
 
         cum = [0.0]
         for i in range(1, len(path_px)):
@@ -908,6 +993,8 @@ class SnakeGame:
             0.0,
             cum[visible_tail_idx] - min(max_tail_trim_px, max(0.0, tail_trim_px)),
         )
+        # Recoil to tile-center spacing: first back to the current live head
+        # center, then one additional full tile along the retrace.
         max_head_dist = contact_dist_px + (lay['tile_size'] * COLLISION_BACKUP_TILES)
         head_dist = (1.0 - progress) * max_head_dist
         tail_dist = min(cum[-1], head_dist + body_len)
@@ -920,6 +1007,9 @@ class SnakeGame:
             if head_dist < cum[i] < tail_dist:
                 pts.append(path_px[i])
         pts.append(head_c)
+        if len(pts) >= 3:
+            pts = self._smooth_path_corners(pts, lay['tile_size'] * 0.45)
+            head_c = pts[-1]
 
         seg_idx = self._segment_index_at_arc_distance(cum, head_dist)
         p0 = path_px[seg_idx]
@@ -939,7 +1029,7 @@ class SnakeGame:
             'recoil_face_to_angle': recoil.get('recoil_face_to_angle'),
             'impact_face_angle': recoil['impact_face_angle'],
             'twitch_face_angle': recoil['twitch_face_angle'],
-            'retrace_path_grid': list(recoil['retrace_path_grid']),
+            'retrace_path_tiles': list(recoil['retrace_path_tiles']),
             'visible_length': recoil['visible_length'],
             'progress': 0.0,
         }
@@ -1156,6 +1246,7 @@ class SnakeGame:
         anchor_fwd = (
             DEATH_FACE_PRE_TWITCH_ANCHOR
             + (DEATH_FACE_TWITCH_ANCHOR - DEATH_FACE_PRE_TWITCH_ANCHOR) * blend_t
+            + DEATH_FACE_ANCHOR_BACK_SHIFT
         )
         growth_span = max(1, DEATH_FACE_TWITCH_START_FRAME - DEATH_FACE_RECOIL_START_FRAME)
         growth_t = (frame_idx - DEATH_FACE_RECOIL_START_FRAME) / growth_span
@@ -1166,9 +1257,10 @@ class SnakeGame:
             if abs(dy) > abs(dx) and dy < 0.0
             else 0.0
         )
+        up_collision_y_nudge = ts * DEATH_FACE_UP_COLLISION_Y_NUDGE_TILES if dy < 0.0 else 0.0
         face_target = (
             head_c[0] + dx * ts * anchor_fwd,
-            head_c[1] + dy * ts * anchor_fwd + vertical_lift,
+            head_c[1] + dy * ts * anchor_fwd + vertical_lift + up_collision_y_nudge,
         )
         angle = -head_angle
         rot = sprite if abs(angle) < 0.01 else pygame.transform.rotate(sprite, angle)
@@ -1181,14 +1273,13 @@ class SnakeGame:
         face_angle = self._current_head_angle(now_ms)
         hold_until_ms = now_ms + DEATH_FACE_COLLISION_INTRO_MS
         retrace_end_ms = hold_until_ms + DEATH_FACE_RECOIL_MS
-        self._ensure_lazy_animations("death_face", "collision_effect")
 
         self._play_collision_sfx()
         self.game_state = "colliding"
         self.high_score = max(self.high_score, self.score)
         self.input_queue.clear()
         self.next_dir = self.direction
-        retrace_path = self._snapshot_recoil_path()
+        retrace_path = self._snapshot_recoil_path_tiles()
         self.collision_recoil = {
             'kind': kind,
             'start_ms': now_ms,
@@ -1202,7 +1293,7 @@ class SnakeGame:
                 self.snake,
                 self._dir_to_angle(self.direction),
             ),
-            'retrace_path_grid': retrace_path,
+            'retrace_path_tiles': retrace_path,
             'visible_length': len(self.snake),
             'hold_until_ms': hold_until_ms,
             'retrace_end_ms': retrace_end_ms,
@@ -1216,6 +1307,8 @@ class SnakeGame:
             impact_head_c[1] + dy * lay['tile_size'] * COLLISION_EFFECT_ANCHOR_FWD,
         )
         self.collision_effect = self._build_collision_effect_state(now_ms, self.direction, impact_anchor_px)
+        self.collision_shake_start_ms = now_ms
+        self.collision_shake_end_ms = now_ms + COLLISION_SHAKE_DURATION_MS
         self.death_face_anim = {
             'start_ms': now_ms,
             'hold_end_ms': hold_until_ms,
@@ -1318,22 +1411,25 @@ class SnakeGame:
         return surf.subsurface(bounds).copy()
 
     def _death_face_mouth_anchor(self, surf):
+        """Return the centre of the mouth region in the lower half of *surf*.
+
+        Uses the C-level get_bounding_rect() instead of per-pixel Python
+        iteration for a large speed-up during sprite sheet processing.
+        """
         w, h = surf.get_size()
         y_start = max(0, min(h - 1, int(h * 0.45)))
-        min_x, min_y = w, h
-        max_x, max_y = -1, -1
 
-        for y in range(y_start, h):
-            for x in range(w):
-                if surf.get_at((x, y)).a <= 0:
-                    continue
-                min_x = min(min_x, x)
-                min_y = min(min_y, y)
-                max_x = max(max_x, x)
-                max_y = max(max_y, y)
+        sub  = surf.subsurface((0, y_start, w, h - y_start))
+        rect = sub.get_bounding_rect(min_alpha=1)
 
-        if max_x < min_x or max_y < min_y:
+        if rect.width <= 0 or rect.height <= 0:
             return (w / 2.0, h / 2.0)
+
+        # Translate the sub-surface rect back to full-surface coordinates.
+        min_x = rect.left
+        max_x = rect.right - 1
+        min_y = rect.top + y_start
+        max_y = rect.bottom - 1 + y_start
 
         return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
 
@@ -1399,15 +1495,20 @@ class SnakeGame:
         return frames
 
     def _slice_mouth_strip(self, strip):
+        """Split a horizontal mouth sprite strip into individual frames.
+
+        Frames are separated by fully transparent columns.  Each column
+        is tested with a 1-pixel-wide subsurface + get_bounding_rect()
+        instead of iterating pixels in Python.
+        """
         frames = []
         w, h = strip.get_size()
         run_start = None
+
         for x in range(w):
-            has_alpha = False
-            for y in range(h):
-                if strip.get_at((x, y)).a > 0:
-                    has_alpha = True
-                    break
+            column = strip.subsurface((x, 0, 1, h))
+            has_alpha = column.get_bounding_rect(min_alpha=1).height > 0
+
             if has_alpha and run_start is None:
                 run_start = x
             elif not has_alpha and run_start is not None:
@@ -1417,31 +1518,32 @@ class SnakeGame:
                 if cropped is not None:
                     frames.append(cropped)
                 run_start = None
+
+        # Capture the last frame if the strip doesn't end with a gap.
         if run_start is not None:
             frame = pygame.Surface((w - run_start, h), pygame.SRCALPHA)
             frame.blit(strip, (0, 0), pygame.Rect(run_start, 0, w - run_start, h))
             cropped = self._crop_alpha_bounds(frame)
             if cropped is not None:
                 frames.append(cropped)
+
         return frames
 
     def _compute_frame_open_amounts(self, frames):
+        """Return a 0..1 openness ratio for each mouth frame.
+
+        Uses pygame.mask.from_surface() to count opaque pixels in C
+        rather than looping with get_at() in Python.
+        """
         if not frames:
             return []
 
-        alpha_counts = []
-        for frame in frames:
-            w, h = frame.get_size()
-            alpha_count = 0
-            for y in range(h):
-                for x in range(w):
-                    if frame.get_at((x, y)).a > 0:
-                        alpha_count += 1
-            alpha_counts.append(alpha_count)
+        alpha_counts = [pygame.mask.from_surface(frame, 0).count()
+                        for frame in frames]
 
         max_alpha = max(alpha_counts, default=0)
         if max_alpha <= 0:
-            return [0.0 for _ in alpha_counts]
+            return [0.0] * len(alpha_counts)
         return [count / max_alpha for count in alpha_counts]
 
     def _load_mouth_frames(self):
@@ -1716,50 +1818,65 @@ class SnakeGame:
         self.score = 0
         self.game_state = "waiting"
         self.tail_darkness = 0.0   # 0 = flat royal-blue,  1 = max dark navy
-        self.play_button_rect = None
-        self.starter_card_visible = False
-        self.starter_card_context = None
-        self.starter_card_reveal_ms = None
-        self.starter_card_run_score = 0
-        self.show_waiting_start_cue = False
+        self.pending_growth = 0
+        self._reset_overlay_state()
+        self.snake, self.apple = self._build_starting_positions()
+        now_ms = pygame.time.get_ticks()
+        self._reset_movement_state(now_ms)
+        self._reset_animation_state(now_ms)
 
+    def _build_starting_positions(self):
         cx, cy = GRID_COLS // 2, GRID_ROWS // 2
         head_x = cx - (START_SNAKE_SEGMENTS + 1)
-        self.snake = [(head_x - offset, cy) for offset in range(START_SNAKE_SEGMENTS)]
-        self.apple = (cx + 3, cy)
+        snake = [(head_x - offset, cy) for offset in range(START_SNAKE_SEGMENTS)]
+        apple = (cx + 3, cy)
+        return snake, apple
 
+    def _reset_movement_state(self, now_ms):
         self.direction = RIGHT
         self.next_dir = RIGHT
-        self.input_queue = deque(maxlen=3)
+        self.input_queue = deque(maxlen=4)
         self.start_move_locked = False
         self.prev_head = self.snake[0]
         self.prev_tail = self.snake[-1]
         self.prev_direction = self.direction
-        self.last_tick_ms = pygame.time.get_ticks()
-        self._apple_pulse_frozen = 1.0
+        self.last_frame_ms = now_ms
         self.head_angle_deg = self._dir_to_angle(self.direction)
         self.turn_from_deg = self.head_angle_deg
         self.turn_to_deg = self.head_angle_deg
-        self.turn_start_ms = self.last_tick_ms
-        self.turn_end_ms = self.last_tick_ms
+        self.turn_start_ms = now_ms
+        self.turn_end_ms = now_ms
+        # ── Continuous movement state ──
+        self.head_float = [float(self.snake[0][0]), float(self.snake[0][1])]
+        self.move_speed = 1000.0 / TICK_RATE   # tiles per second
+        self.body_path = deque()
+        self._rebuild_body_path()
+        self.last_head_cell = self.snake[0]
+        self._last_turn_cell = None
+
+    def _reset_animation_state(self, now_ms):
+        self._apple_pulse_frozen = 1.0
         self.mouth_phase = 0.0
         self.mouth_target_open = False
-        self.mouth_last_update_ms = self.last_tick_ms
+        self.mouth_last_update_ms = now_ms
         self.mouth_frame_idx = 0
         self.mouth_close_delay_until_ms = 0
         self.tongue_anim_active = False
         self.tongue_anim_phase = 0.0
         self.tongue_anim_dir = 1
-        self.tongue_last_update_ms = self.last_tick_ms
+        self.tongue_last_update_ms = now_ms
         self.tongue_frame_idx = 0
-        self.tongue_next_rattle_ms = self.last_tick_ms
-        self._schedule_next_tongue_rattle(self.last_tick_ms)
+        self.tongue_next_rattle_ms = now_ms
+        self._schedule_next_tongue_rattle(now_ms)
         self.eye_blink_active = False
         self.eye_frame_idx = 0
-        self.eye_last_update_ms = self.last_tick_ms
-        self.eye_next_blink_ms = self.last_tick_ms
-        self._schedule_next_eye_blink(self.last_tick_ms)
+        self.eye_last_update_ms = now_ms
+        self.eye_next_blink_ms = now_ms
+        self._schedule_next_eye_blink(now_ms)
         self.bulges = []
+        self.growth_hidden_tiles = 0.0
+        self.collision_shake_start_ms = 0
+        self.collision_shake_end_ms = 0
         self._reset_recoil_path_history()
         self.collision_recoil = None
         self.death_pose = None
@@ -1860,191 +1977,484 @@ class SnakeGame:
     def _toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
         if self.fullscreen:
-            self._ensure_raw_images("not_full_screen")
-        self._last_fs_toggle_ms = pygame.time.get_ticks()
-        if self.fullscreen:
             self.window = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         else:
             self.window = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
+        self._set_window_icon()
         self._last_scale = None
 
     # ── Main loop ─────────────────────────────────────────────────────────────
+    def _run_frame(self):
+        self._refresh_starter_card_visibility()
+        self._handle_events()
+        self._tick_if_due()
+        self._update_collision_recoil()
+        self._ensure_assets()
+        self._draw()
+        self._update_cursor()
+
+    def _update_cursor(self):
+        mouse_pos = pygame.mouse.get_pos()
+        interactive_rects = (
+            self.x_rect,
+            self.fs_rect,
+            self.vol_rect,
+            self.play_button_rect,
+        )
+        if any(rect and rect.collidepoint(mouse_pos) for rect in interactive_rects):
+            pygame.mouse.set_cursor(self.cursor_hand)
+        else:
+            pygame.mouse.set_cursor(self.cursor_default)
+
     def _main_loop(self):
         while True:
-            self._refresh_starter_card_visibility()
-            self._handle_events()
-            self._tick_if_due()
-            self._update_collision_recoil()
-            self._refresh_starter_card_visibility()
-            self._ensure_assets()
-            self._draw()
-            mouse_pos = pygame.mouse.get_pos()
-            if ((self.x_rect  and self.x_rect.collidepoint(mouse_pos)) or
-                (self.fs_rect and self.fs_rect.collidepoint(mouse_pos)) or
-                (self.vol_rect and self.vol_rect.collidepoint(mouse_pos)) or
-                (self.play_button_rect and self.play_button_rect.collidepoint(mouse_pos))):
-                pygame.mouse.set_cursor(self.cursor_hand)
-            else:
-                pygame.mouse.set_cursor(self.cursor_default)
-            if self._deferred_tasks_started:
-                if not self._run_next_deferred_startup_task():
-                    self._load_next_lazy_animation()
-            else:
-                self._deferred_tasks_started = True
+            self._run_frame()
             self.clock.tick(FPS)
 
     # ── Input ─────────────────────────────────────────────────────────────────
+    def _handle_mouse_button_down(self, event):
+        if event.button != 1:
+            return False
+        if self.x_rect and self.x_rect.collidepoint(event.pos):
+            self._quit_game()
+        if self.fs_rect and self.fs_rect.collidepoint(event.pos):
+            self._toggle_fullscreen()
+            return True
+        if self.vol_rect and self.vol_rect.collidepoint(event.pos):
+            self._toggle_audio_mute()
+            return True
+        if (
+            self.starter_card_visible and
+            self.play_button_rect and
+            self.play_button_rect.collidepoint(event.pos)
+        ):
+            self._handle_starter_card_play()
+            return True
+        return False
+
+    def _handle_key_down(self, event):
+        if event.key == pygame.K_ESCAPE:
+            self._quit_game()
+        if event.key == pygame.K_f:
+            self._toggle_fullscreen()
+            return True
+        if (
+            event.key == pygame.K_r and
+            self.game_state == "waiting" and
+            self.starter_card_visible and
+            self.starter_card_context == "launch"
+        ):
+            self._show_waiting_start_cue()
+            return True
+        if event.key == pygame.K_r and self.game_state == "dead":
+            self.new_game()
+            return True
+        if self.starter_card_visible:
+            return False
+        if self.game_state == "waiting" and event.key in DIR_KEYS:
+            return self._start_waiting_run(DIR_KEYS[event.key])
+        if self.game_state == "playing" and event.key in DIR_KEYS:
+            self._enqueue_direction(DIR_KEYS[event.key])
+            return True
+        return False
+
     def _handle_events(self):
-        self._refresh_starter_card_visibility()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit(); exit()
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1 and self.x_rect and self.x_rect.collidepoint(event.pos):
-                    pygame.quit(); exit()
-                if event.button == 1 and self.fs_rect and self.fs_rect.collidepoint(event.pos):
-                    self._toggle_fullscreen()
-                if event.button == 1 and self.vol_rect and self.vol_rect.collidepoint(event.pos):
-                    self._toggle_audio_mute()
-                if (
-                    event.button == 1 and
-                    self.starter_card_visible and
-                    self.play_button_rect and
-                    self.play_button_rect.collidepoint(event.pos)
-                ):
-                    self._handle_starter_card_play()
-                    return
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    pygame.quit(); exit()
-                if event.key == pygame.K_f:
-                    self._toggle_fullscreen(); return
-                if (
-                    event.key == pygame.K_r and
-                    self.game_state == "waiting" and
-                    self.starter_card_visible and
-                    self.starter_card_context == "launch"
-                ):
-                    self._ensure_raw_images("start_box")
-                    self.show_waiting_start_cue = True
-                    self._hide_starter_card()
-                    return
-                if event.key == pygame.K_r and self.game_state == "dead":
-                    self.new_game()
-                    return
-                if self.starter_card_visible:
-                    continue
-                if self.game_state == "waiting" and event.key in DIR_KEYS:
-                    if self._start_waiting_run(DIR_KEYS[event.key]):
-                        return
-                if self.game_state == "playing" and event.key in DIR_KEYS:
-                    self._enqueue_direction(DIR_KEYS[event.key])
+                self._quit_game()
+            if event.type == pygame.MOUSEBUTTONDOWN and self._handle_mouse_button_down(event):
+                return
+            if event.type == pygame.KEYDOWN and self._handle_key_down(event):
+                return
 
     def _enqueue_direction(self, new_dir):
+        """Queue a direction change.  Multiple rapid inputs are buffered
+        so back-to-back turns (e.g. UP then LEFT) execute in sequence
+        at successive cell centres."""
         if self.start_move_locked:
             return False
-        base_dir = self.input_queue[-1] if self.input_queue else self.direction
-        if new_dir == (-base_dir[0], -base_dir[1]): return False
-        if new_dir == base_dir: return False
+
+        # The effective direction is whatever the snake will be heading
+        # AFTER all already-queued turns have fired.
+        if self.input_queue:
+            effective_dir = self.input_queue[-1]
+        else:
+            effective_dir = self.direction
+
+        if new_dir == (-effective_dir[0], -effective_dir[1]):
+            return False
+        if new_dir == effective_dir:
+            return False
+
+        if len(self.input_queue) >= self.input_queue.maxlen:
+            return False
+
+        # Prevent turning into own body.
+        # Project where this turn would actually execute by walking
+        # through all pending queued turns from the current head cell.
+        exec_x, exec_y = self.last_head_cell
+        sim_dir = self.direction
+        projected_path = []
+        for q in self.input_queue:
+            exec_x += sim_dir[0]
+            exec_y += sim_dir[1]
+            projected_path.append((exec_x, exec_y))
+            sim_dir = q
+        # One more step in the simulated direction to reach the
+        # cell centre where this new turn would fire.
+        exec_x += sim_dir[0]
+        exec_y += sim_dir[1]
+        projected_path.append((exec_x, exec_y))
+        
+        check = (exec_x + new_dir[0], exec_y + new_dir[1])
+        
+        # Check against the future projected path of the snake's head
+        if check in projected_path:
+            return False
+            
+        # Check against the existing snake body, accounting for tail retraction.
+        # The head takes `steps_future` moves to enter the `check` cell.
+        steps_future = len(self.input_queue) + 2
+        future_body = self.snake[:max(0, len(self.snake) - steps_future)]
+        if check in future_body:
+            return False
+
+        # Add to the queue. The turn will strictly execute at the required
+        # future cell crossing. This matches standard grid-locked snake
+        # (like Google Snake) and prevents ANY visual glitching, snapping,
+        # or shifting.
         self.input_queue.append(new_dir)
-        self.next_dir = new_dir
-        if len(self.input_queue) == 1:
-            self._start_head_turn(new_dir, pygame.time.get_ticks())
         return True
 
+    # ── Continuous movement helpers ──────────────────────────────────────────
+
+    def _rebuild_body_path(self):
+        """Rebuild body_path from the current snake cell list (tail→head)."""
+        self.body_path = deque()
+        for i in range(len(self.snake) - 1, -1, -1):
+            self.body_path.append((float(self.snake[i][0]), float(self.snake[i][1])))
+
     def _tick_if_due(self):
+        """Advance the snake continuously each frame instead of per-tick."""
         if self.game_state != "playing":
             return
         now = pygame.time.get_ticks()
-        while now - self.last_tick_ms >= TICK_RATE:
-            self._update()
+        dt_ms = now - self.last_frame_ms
+        self.last_frame_ms = now
+        dt_ms = max(0, min(dt_ms, 50))          # cap to prevent huge jumps
+        if dt_ms <= 0:
+            return
+        dist = self.move_speed * (dt_ms / 1000.0)
+        self._advance_head(dist)
+
+    def _advance_head(self, dist):
+        """Move the head forward by *dist* grid-units, executing any
+        queued turn exactly at the cell centre it crosses so the
+        visual path never jumps."""
+        if dist <= 0 or self.game_state != "playing":
+            return
+
+        start_remaining = dist
+        remaining = dist
+        while remaining > 1e-9 and self.game_state == "playing":
+            dx, dy = self.direction
+            # Next cell centre along the current direction.
+            ncx = self.last_head_cell[0] + dx
+            ncy = self.last_head_cell[1] + dy
+
+            # Signed distance to that centre.
+            if dx > 0:
+                d2c = ncx - self.head_float[0]
+            elif dx < 0:
+                d2c = self.head_float[0] - ncx
+            elif dy > 0:
+                d2c = ncy - self.head_float[1]
+            else:
+                d2c = self.head_float[1] - ncy
+            d2c = max(0.0, d2c)
+
+            # ── Early Registration for Collisions ──
+            COLLISION_TRIGGER_BORDER_D2C = BORDER_CONTACT_INSET_TILES
+            COLLISION_TRIGGER_SELF_D2C = 0.6
+            is_collision = False
+            col_kind = None
+            trigger_d2c = 0.0
+
+            if not (0 <= ncx < GRID_COLS and 0 <= ncy < GRID_ROWS):
+                is_collision = True
+                col_kind = "border"
+                trigger_d2c = COLLISION_TRIGGER_BORDER_D2C
+            elif (ncx, ncy) in self.snake[:-1]:
+                is_collision = True
+                col_kind = "self"
+                trigger_d2c = COLLISION_TRIGGER_SELF_D2C
+
+            if is_collision:
+                dist_to_col = max(0.0, d2c - trigger_d2c)
+                if remaining >= dist_to_col:
+                    self.head_float[0] += dx * dist_to_col
+                    self.head_float[1] += dy * dist_to_col
+                    self._begin_collision_recoil(col_kind, (ncx, ncy))
+                    break
+
+            # ── Early Registration for Apples ──
+            APPLE_TRIGGER_D2C = 0.7
+            is_apple_next = (self.apple is not None and (ncx, ncy) == self.apple)
+            if is_apple_next:
+                dist_to_apple = max(0.0, d2c - APPLE_TRIGGER_D2C)
+                if remaining >= dist_to_apple:
+                    self.score      += 1
+                    self.high_score  = max(self.high_score, self.score)
+                    self.tail_darkness = min(1.0, self.tail_darkness + APPLE_DARKEN_STEP)
+                    self._play_eat_sfx()
+                    self._spawn_bulge()
+                    self._spawn_apple()
+                    self.pending_growth = getattr(self, 'pending_growth', 0) + 1
+
+            if remaining < d2c:
+                # Won't reach the next cell centre this step.
+                self.head_float[0] += dx * remaining
+                self.head_float[1] += dy * remaining
+                remaining = 0.0
+                break
+
+            # ── Head reached the next cell centre ─────────────────
+            # Place head exactly at the centre.
+            self.head_float[0] = float(ncx)
+            self.head_float[1] = float(ncy)
+            remaining -= d2c
+
+            # Snap perpendicular axis to prevent floating-point drift.
+            if dx != 0:
+                self.head_float[1] = float(round(self.head_float[1]))
+            else:
+                self.head_float[0] = float(round(self.head_float[0]))
+
+            cp = (float(ncx), float(ncy))
+            self.body_path.append(cp)
+            self.last_head_cell = (ncx, ncy)
+            self._on_enter_new_cell((ncx, ncy))
+
             if self.game_state != "playing":
                 break
-            bulge_step_px = self._bulge_headspace_speed_px(self._layout()['tile_size'])
-            for bulge in self.bulges:
-                if bulge.get('delay_frames', 0) > 0:
-                    continue
-                if not bulge.get('released', False):
-                    continue
-                if bulge.get('hold_head_until_tick', False):
-                    bulge['hold_head_until_tick'] = False
-                    continue
-                bulge['dist_px'] += bulge_step_px
-            self.last_tick_ms += TICK_RATE
 
-    def _update(self):
-        self.prev_direction = self.direction
-        if self.input_queue:
-            self.direction = self.input_queue.popleft()
-        else:
-            self.direction = self.next_dir
-        if self.direction != self.prev_direction:
-            self._play_turn_sfx()
+            # Apply the next queued turn at this cell centre.
+            if self.input_queue:
+                queued = self.input_queue.popleft()
+                # Guard against stale queue entries that became reverses.
+                if queued != (-self.direction[0], -self.direction[1]):
+                    now_ms = pygame.time.get_ticks()
+                    self.prev_direction = self.direction
+                    self.direction = queued
+                    self.next_dir = queued
+                    self.start_move_locked = False
+                    self._last_turn_cell = (ncx, ncy)
+                    self._start_head_turn(self.direction, now_ms)
+                    self._play_turn_sfx()
 
-        if self.input_queue:
-            self._start_head_turn(self.input_queue[0], self.last_tick_ms)
+        moved_tiles = max(0.0, start_remaining - remaining)
+        self._advance_growth_reveal(moved_tiles)
+
+    def _on_enter_new_cell(self, new_cell):
+        """Game logic when the head enters a new grid cell."""
+        # ── Collision ──
+        if not (0 <= new_cell[0] < GRID_COLS and 0 <= new_cell[1] < GRID_ROWS):
+            self._begin_collision_recoil("border", new_cell)
+            return
+        if new_cell in self.snake[:-1]:
+            self._begin_collision_recoil("self", new_cell)
+            return
 
         self.prev_head = self.snake[0]
         self.prev_tail = self.snake[-1]
-
-        hx, hy   = self.snake[0]
-        dx, dy   = self.direction
-        new_head = (hx + dx, hy + dy)
-
-        if not (0 <= new_head[0] < GRID_COLS and 0 <= new_head[1] < GRID_ROWS):
-            self._begin_collision_recoil("border", new_head)
-            return
-        if new_head in self.snake[:-1]:
-            self._begin_collision_recoil("self", new_head)
-            return
-
-        self.snake.insert(0, new_head)
+        self.snake.insert(0, new_cell)
         self.start_move_locked = False
-        self._record_recoil_path_head(new_head)
-        if new_head == self.apple:
+        self._record_recoil_path_head(new_cell)
+
+        if getattr(self, 'pending_growth', 0) > 0:
+            self.pending_growth -= 1
+            # Keep game-state growth immediate but reveal it smoothly in render.
+            self.growth_hidden_tiles += 1.0
+        elif new_cell == self.apple:
             self.score      += 1
             self.high_score  = max(self.high_score, self.score)
             self.tail_darkness = min(1.0, self.tail_darkness + APPLE_DARKEN_STEP)
+            self._play_eat_sfx()
             self._spawn_bulge()
             self._spawn_apple()
         else:
             self.snake.pop()
 
+        # Advance bulges on cell entry (replaces per-tick bulge stepping).
+        bulge_step_px = self._bulge_headspace_speed_px(self._layout()['tile_size'])
+        for bulge in self.bulges:
+            if bulge.get('delay_frames', 0) > 0:
+                continue
+            if not bulge.get('released', False):
+                continue
+            if bulge.get('hold_head_until_tick', False):
+                bulge['hold_head_until_tick'] = False
+                continue
+            bulge['dist_px'] += bulge_step_px
+
+        # Trim body_path memory.
+        max_pts = len(self.snake) * 3 + 20
+        while len(self.body_path) > max_pts:
+            self.body_path.popleft()
+
+    def _smooth_path_corners(self, pts, radius):
+        """Replace right-angle corners with smooth quadratic Bézier arcs."""
+        if len(pts) < 3:
+            return pts
+        smoothed = [pts[0]]
+        for i in range(1, len(pts) - 1):
+            A = pts[i - 1]
+            B = pts[i]
+            C = pts[i + 1]
+            ab = math.hypot(B[0] - A[0], B[1] - A[1])
+            bc = math.hypot(C[0] - B[0], C[1] - B[1])
+            if ab < 0.1 or bc < 0.1:
+                smoothed.append(B)
+                continue
+            din = ((B[0] - A[0]) / ab, (B[1] - A[1]) / ab)
+            dout = ((C[0] - B[0]) / bc, (C[1] - B[1]) / bc)
+            dot = din[0] * dout[0] + din[1] * dout[1]
+            if abs(dot) > 0.95:
+                smoothed.append(B)
+                continue
+            off = min(radius, ab * 0.48, bc * 0.48)
+            if off < 1.0:
+                smoothed.append(B)
+                continue
+            p0 = (B[0] - din[0] * off, B[1] - din[1] * off)
+            p2 = (B[0] + dout[0] * off, B[1] + dout[1] * off)
+            ARC_STEPS = 8
+            for j in range(ARC_STEPS + 1):
+                t = j / ARC_STEPS
+                mt = 1.0 - t
+                smoothed.append((
+                    mt * mt * p0[0] + 2 * mt * t * B[0] + t * t * p2[0],
+                    mt * mt * p0[1] + 2 * mt * t * B[1] + t * t * p2[1],
+                ))
+        smoothed.append(pts[-1])
+        return smoothed
+
+    def _build_continuous_body_path(self, lay):
+        """Build the tail→head polyline from the continuous body path."""
+        n = len(self.snake)
+        if n < 2:
+            return [], None
+        ts = lay['tile_size']
+        hf = self.head_float
+        head_px = (
+            lay['board_ox'] + hf[0] * ts + ts / 2.0,
+            lay['board_oy'] + hf[1] * ts + ts / 2.0,
+        )
+        # Backward path: head → body_path (newest→oldest)
+        back = [head_px]
+        for i in range(len(self.body_path) - 1, -1, -1):
+            bx, by = self.body_path[i]
+            back.append((
+                lay['board_ox'] + bx * ts + ts / 2.0,
+                lay['board_oy'] + by * ts + ts / 2.0,
+            ))
+        # Extension past the tail so the polyline is long enough.
+        if len(back) >= 2:
+            lx, ly = back[-1]
+            px, py = back[-2]
+            back.append((lx + (lx - px), ly + (ly - py)))
+
+        # Cumulative arc-length.
+        cum = [0.0]
+        for i in range(1, len(back)):
+            cum.append(cum[-1] + math.hypot(
+                back[i][0] - back[i - 1][0],
+                back[i][1] - back[i - 1][1]))
+        total_path = cum[-1]
+        visible_len_tiles = max(0.0, (n - 1) - self.growth_hidden_tiles)
+        body_len = min(visible_len_tiles * ts, total_path)
+        if body_len <= 0:
+            return [head_px], head_px
+
+        tail_px = self._sample_polyline_at_distance(back, cum, body_len)
+
+        # Forward path: tail → interior → head.
+        interior = [i for i in range(1, len(back) - 1)
+                    if 0 < cum[i] < body_len]
+        pts = [tail_px]
+        for i in reversed(interior):
+            pts.append(back[i])
+        pts.append(head_px)
+
+        # Deduplicate very close points.
+        filtered = [pts[0]]
+        for i in range(1, len(pts)):
+            if math.hypot(pts[i][0] - filtered[-1][0],
+                          pts[i][1] - filtered[-1][1]) > 0.5:
+                filtered.append(pts[i])
+        if filtered[-1] != pts[-1]:
+            filtered.append(pts[-1])
+        # Smooth every right-angle corner into a curved arc.
+        corner_radius = ts * 0.45
+        filtered = self._smooth_path_corners(filtered, corner_radius)
+        return filtered, head_px
+
     # ── Draw ──────────────────────────────────────────────────────────────────
     def _draw(self):
-        lay      = self._layout()
-        a        = self._scaled_assets
-        now      = pygame.time.get_ticks()
-        progress = min((now - self.last_tick_ms) / TICK_RATE, 1.0)
-        starter_card_visible = self.starter_card_visible
+        lay = self._layout()
+        assets = self._scaled_assets
+        now = pygame.time.get_ticks()
+        progress = self._head_motion_progress()
         self.play_button_rect = None
 
         self.window.fill(HEADER_COLOUR)
-        self._draw_header(lay, a)
+        self._draw_header(lay, assets)
         pygame.draw.rect(self.window, PANEL_COLOUR,
                          pygame.Rect(0, lay['header_h'],
                                      lay['win_w'], lay['win_h'] - lay['header_h']))
-        self._draw_tiles(lay, a)
-        self._draw_apple(lay, a)
+        self._draw_tiles(lay, assets)
+        self._draw_apple(lay, assets)
         self._draw_snake(lay, progress, now)
 
-        if starter_card_visible:
-            self._draw_starter_card_overlay(lay, a)
-        elif self.game_state == "waiting" and self.show_waiting_start_cue:
-            self._draw_waiting_start_cue(lay, a)
+        shake_x, shake_y = self._collision_shake_offset_px(now, lay)
+        board_rect = pygame.Rect(lay['board_ox'], lay['board_oy'], lay['board_w'], lay['board_h'])
+        if abs(shake_x) > 0.01 or abs(shake_y) > 0.01:
+            gameplay_lay = dict(lay)
+            gameplay_lay['board_ox'] = lay['board_ox'] + int(round(shake_x))
+            gameplay_lay['board_oy'] = lay['board_oy'] + int(round(shake_y))
+            if board_rect.width > 0 and board_rect.height > 0:
+                prev_clip = self.window.get_clip()
+                self.window.set_clip(board_rect)
+                self._draw_tiles(gameplay_lay, assets)
+                self._draw_apple(gameplay_lay, assets)
+                self._draw_snake(gameplay_lay, progress, now)
+                self.window.set_clip(prev_clip)
+            border_w = max(1, int(round(BOARD_BORDER_STROKE_BASE * lay['sc'])))
+            border_rect = board_rect.inflate(border_w * 2, border_w * 2)
+            pygame.draw.rect(self.window, PANEL_COLOUR, border_rect, border_w)
+        self._draw_overlay(lay, assets)
+        self._draw_window_controls(assets)
+        pygame.display.flip()
 
-        fullscreen_icon = a['not_full_screen'] if self.fullscreen else a['full_screen']
-        volume_icon = a['volume_muted'] if self.audio_muted else a['volume']
+    def _draw_overlay(self, lay, assets):
+        if self.starter_card_visible:
+            self._draw_starter_card_overlay(lay, assets)
+            return
+        if self.game_state == "waiting" and self.show_waiting_start_cue:
+            self._draw_waiting_start_cue(lay, assets)
+
+    def _draw_window_controls(self, assets):
+        fullscreen_icon = assets['not_full_screen'] if self.fullscreen else assets['full_screen']
+        volume_icon = assets['volume_muted'] if self.audio_muted else assets['volume']
         for icon, rect in (
             (fullscreen_icon, self.fs_rect),
             (volume_icon, self.vol_rect),
-            (a['x'], self.x_rect),
+            (assets['x'], self.x_rect),
         ):
-            if rect is None: continue
+            if rect is None:
+                continue
             draw_rect = icon.get_rect(center=rect.center)
             self.window.blit(icon, draw_rect.topleft)
-
-        pygame.display.flip()
 
     def _draw_header(self, lay, a):
         icon_x = int(12 * lay['sc'])
@@ -2054,12 +2464,17 @@ class SnakeGame:
         self.window.blit(score_surf, (
             icon_x + a['apple_icon'].get_width() + int(8 * lay['sc']),
             (lay['header_h'] - score_surf.get_height()) // 2))
-        trophy_x = icon_x * 10
-        self.window.blit(a['trophy'], (trophy_x, icon_y))
-        hs_surf = self.font_score.render(str(self.high_score), True, SCORE_COLOUR)
-        self.window.blit(hs_surf, (
-            trophy_x + a['trophy'].get_width() + int(8 * lay['sc']),
-            (lay['header_h'] - a['trophy'].get_height()) // 2))
+        show_trophy = (
+            self.high_score > 0
+            and not (self.starter_card_visible and self.starter_card_context == "launch")
+        )
+        if show_trophy:
+            trophy_x = icon_x * 10
+            self.window.blit(a['trophy'], (trophy_x, icon_y))
+            hs_surf = self.font_score.render(str(self.high_score), True, SCORE_COLOUR)
+            self.window.blit(hs_surf, (
+                trophy_x + a['trophy'].get_width() + int(8 * lay['sc']),
+                (lay['header_h'] - a['trophy'].get_height()) // 2))
         margin = int(17 * lay['sc'])
         gap    = int(16 * lay['sc'])
         x_x  = lay['win_w'] - margin - a['x'].get_width()
@@ -2143,8 +2558,6 @@ class SnakeGame:
             seg_len = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
             if seg_len < 0.1:
                 continue
-            seg_from_head = (len(pts) - 2) - seg
-            seg_r = self._radius_for_segment_from_head(seg_from_head, r)
             steps = max(1, int(math.ceil(seg_len / step_px)))
             prev_pt = p0
             for s in range(1, steps + 1):
@@ -2153,6 +2566,8 @@ class SnakeGame:
                           p0[1] + (p1[1] - p0[1]) * t_local)
                 mid_t = (s - 0.5) / steps
                 arc_dist = cum[seg] + seg_len * mid_t
+                arc_from_head = total - arc_dist
+                seg_r = self._radius_for_arc_from_head_px(arc_from_head, lay['tile_size'], r)
                 frac = max(0.0, min(1.0, arc_dist / total))
                 col = mix_colour(tail_colour, head_colour, frac)
                 draw_capsule(self.window, col, prev_pt, cur_pt, seg_r)
@@ -2171,7 +2586,7 @@ class SnakeGame:
             pts, head_c, head_angle = self._build_recoil_points(
                 lay,
                 self.collision_recoil['impact_head'],
-                self.collision_recoil['retrace_path_grid'],
+                self.collision_recoil['retrace_path_tiles'],
                 self.collision_recoil['visible_length'],
                 recoil_progress,
                 tail_trim_px=tail_trim_px,
@@ -2198,7 +2613,7 @@ class SnakeGame:
             pts, head_c, head_angle = self._build_recoil_points(
                 lay,
                 self.death_pose['impact_head'],
-                self.death_pose['retrace_path_grid'],
+                self.death_pose['retrace_path_tiles'],
                 self.death_pose['visible_length'],
                 self.death_pose['progress'],
             )
@@ -2221,20 +2636,14 @@ class SnakeGame:
             return
 
         r  = lay["body_r"]
-        pts, head_c = self._build_transition_points(
-            lay,
-            self.snake,
-            prev_head=self.prev_head,
-            prev_tail=self.prev_tail,
-            progress=progress,
-        )
-        if head_c is None:
+        pts, head_c = self._build_continuous_body_path(lay)
+        if not pts or head_c is None:
             return
         head_angle = self._current_head_angle(now)
         body = self._draw_snake_body(lay, pts)
         if body is None:
             return
-        face_angle = self._face_angle_from_head_path(pts, lay, head_angle)
+        face_angle = head_angle   # smooth time-based lerp for live play
         cum, total = body
         head_colour = SNAKE_HEAD_COL
         tail_colour = mix_colour(SNAKE_HEAD_COL, SNAKE_TAIL_DARK_MAX, self.tail_darkness)
@@ -2255,12 +2664,11 @@ class SnakeGame:
                 elif bulge.get('hold_head_until_tick', False):
                     d = 0.0
                 else:
-                    d = bulge['dist_px'] + progress * bulge_speed_px
+                    d = bulge['dist_px'] + smoothstep(progress) * bulge_speed_px
                 arc_from_tail = total - d
                 center = self._sample_polyline_at_distance(pts, cum, arc_from_tail)
-                seg_idx = self._segment_index_at_arc_distance(cum, arc_from_tail)
-                seg_from_head = (len(pts) - 2) - seg_idx
-                local_r = self._radius_for_segment_from_head(seg_from_head, r)
+                arc_from_head = max(0.0, min(total, total - arc_from_tail))
+                local_r = self._radius_for_arc_from_head_px(arc_from_head, lay['tile_size'], r)
                 decay_px = max(1.0, bulge['decay_segments'] * lay['tile_size'])
                 t = max(0.0, min(1.0, d / decay_px))
                 s = lerp(bulge['start_scale'], bulge['end_scale'], smoothstep(t))
@@ -2287,6 +2695,7 @@ class SnakeGame:
         dx, dy         = self._angle_vec(face_angle)
         perp_x, perp_y = -dy, dx
         ts = lay['tile_size']
+        apple_c = self._apple_center_screen(lay)
 
         sprite = None
         if self._scaled_eye_frames:
@@ -2346,6 +2755,11 @@ class SnakeGame:
         for ex, ey in (left_eye, right_eye):
             if sprite is not None:
                 rot_deg = -face_angle
+                if apple_c is not None:
+                    look_vx = apple_c[0] - ex
+                    look_vy = apple_c[1] - ey
+                    if math.hypot(look_vx, look_vy) > 1e-6:
+                        rot_deg = -math.degrees(math.atan2(look_vy, look_vx))
                 eye_sprite = sprite if abs(rot_deg) < 0.01 else pygame.transform.rotate(sprite, rot_deg)
                 rect = eye_sprite.get_rect(center=(int(ex), int(ey)))
                 self.window.blit(eye_sprite, rect.topleft)
@@ -2381,9 +2795,6 @@ class SnakeGame:
         self.window.blit(card, card_rect.topleft)
         self.window.blit(button, button_rect.topleft)
         self.play_button_rect = button_rect
-
-        if self.starter_card_context != "death":
-            return
 
         stat_font = pygame.font.SysFont("Arial", max(8, int(card.get_height() * 0.10)))
         run_score_surf = stat_font.render(str(self.starter_card_run_score), True, SCORE_COLOUR)

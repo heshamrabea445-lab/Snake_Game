@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 project_root = Path.cwd()
+icon_path = project_root / "images" / "snake_icon.ico"
 datas = [
     (str(project_root / "audio"), "audio"),
     (str(project_root / "images"), "images"),
@@ -31,12 +32,13 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Snake",
+    name="Snake Game",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     console=False,
+    icon=str(icon_path),
 )
 
 coll = COLLECT(
