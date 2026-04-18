@@ -22,8 +22,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Compile main.py
-        run: python -m py_compile main.py
+      - name: Compile desktop sources
+        run: python -m py_compile main.py snake_game\__init__.py snake_game\game.py snake_game\constants.py snake_game\helpers.py snake_game\bootstrap.py
 
       - name: Run smoke test
         run: python scripts/smoke_test.py
+
+      - name: Check browser scripts
+        shell: pwsh
+        run: |
+          node --check docs/game.js
+          Get-ChildItem docs/js -Filter *.js | ForEach-Object { node --check $_.FullName }

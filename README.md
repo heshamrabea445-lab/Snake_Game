@@ -78,6 +78,7 @@ The Windows ZIP is the easiest way to play on Windows.
 Snake_Game/
 |-- audio/
 |-- docs/
+|-- snake_game/
 |-- images/
 |-- media/
 |-- scripts/

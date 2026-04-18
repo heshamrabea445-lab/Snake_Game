@@ -1,272 +1,33 @@
-const C = {
-  BASE_W: 650,
-  BASE_H: 650,
-  HEADER_H: 70,
-  TILE_SIZE: 34,
-  GRID_COLS: 18,
-  GRID_ROWS: 16,
-  START_SNAKE_SEGMENTS: 4,
-  TICK_RATE: 125,
-  FPS: 60,
-  HEADER_COLOR: [78, 112, 50],
-  PANEL_COLOR: [87, 138, 52],
-  SNAKE_HEAD_COLOR: [78, 126, 240],
-  SNAKE_TAIL_DARK_MAX: [18, 38, 110],
-  NOSE_COLOR: [18, 60, 160],
-  SCORE_COLOR: "#ffffff",
-  APPLE_DARKEN_STEP: 0.05,
-  MOUTH_TRIGGER_RADIUS_TILES: 2,
-  MOUTH_OPEN_CLOSE_FRAMES: 10,
-  MOUTH_CLOSE_DELAY_SEC: 0.15,
-  MOUTH_ANCHOR_FWD: 0.45,
-  MOUTH_ANCHOR_SIDE: 0.0,
-  MOUTH_SCALE: 1.2,
-  TONGUE_RATTLE_MIN_SEC: 0,
-  TONGUE_RATTLE_MAX_SEC: 10,
-  TONGUE_RATTLE_MODE_SEC: 5,
-  TONGUE_FRAME_SEC: 0.025,
-  TONGUE_SCALE: 1.1,
-  TONGUE_ANCHOR_FWD: 0.45,
-  TONGUE_ANCHOR_SIDE: 0.0,
-  TONGUE_SHADOW_SCALE: 0.88,
-  TONGUE_SHADOW_ALPHA: 40,
-  TONGUE_SHADOW_YOFF_FACTOR: 0.16,
-  TONGUE_BASE_OFFSET: 0.42,
-  EYE_CENTER_FWD: -0.45,
-  EYE_CENTER_SIDE: 0.0,
-  EYE_SEPARATION: 0.32,
-  EYE_SHADOW_SCALE: 0.8,
-  EYE_BLINK_FRAME_SEC: 0.035,
-  FACE_SHADOW_ALPHA: 38,
-  FACE_SHADOW_YOFF_FACTOR: 0.55,
-  MOUTH_SHADOW_SCALE: 0.95,
-  SNAKE_SHADOW_ALPHA: 40,
-  SNAKE_SHADOW_YOFF_FACTOR: 0.42,
-  SNAKE_SHADOW_RADIUS_FACTOR: 0.96,
-  SEGMENT_SHRINK_PER_SEG: 0.25,
-  TAIL_MIN_RADIUS_FACTOR: 0.62,
-  BULGE_START_SCALE: 1.75,
-  BULGE_MIN_END_SCALE: 1.0,
-  BULGE_END_HIDE_T: 0.96,
-  BULGE_SPAWN_DELAY_FRAMES: 4,
-  BULGE_TRAVEL_SEG_PER_TICK: 0.70,
-  BULGE_FADE_SEGMENTS_CAP: 25,
-  GROWTH_REVEAL_TILES_PER_TILE: 0.90,
-  DEATH_FACE_COLLISION_INTRO_MS: 300,
-  DEATH_FACE_RECOIL_MS: 75,
-  DEATH_OVERLAY_REVEAL_MS: 960,
-  BORDER_CONTACT_INSET_TILES: 0.88,
-  COLLISION_BACKUP_TILES: 1.0,
-  COLLISION_PATH_EXTRA_CELLS: Math.ceil(1.0) + 2,
-  COLLISION_TAIL_INSET_TILES: 0.30,
-  COLLISION_EFFECT_SCALE: 1.5,
-  COLLISION_EFFECT_FRAME_COUNT: 21,
-  COLLISION_EFFECT_SPEED_MULT: 2.5,
-  COLLISION_EFFECT_ANCHOR_FWD: -1.2,
-  COLLISION_EFFECT_EXTRA_ROT_DEG: 180,
-  COLLISION_SHAKE_DURATION_MS: 520,
-  COLLISION_SHAKE_AMPLITUDE_TILES: 0.22,
-  COLLISION_SHAKE_X_CYCLES: 9.0,
-  COLLISION_SHAKE_Y_CYCLES: 13.0,
-  BOARD_BORDER_STROKE_BASE: 2,
-  BROWSER_DEFAULT_TOTAL_PAD_X: 380,
-  BROWSER_DEFAULT_TOTAL_PAD_Y: 140,
-  BROWSER_DEFAULT_MAX_SIZE: 740,
-  BROWSER_MAXIMIZED_TOTAL_PAD_X: 0,
-  BROWSER_MAXIMIZED_TOTAL_PAD_Y: 0,
-  STARTER_CARD_BASE_W: 310,
-  STARTER_CARD_BUTTON_GAP: 12,
-  STARTER_CARD_STAT_LEFT_X: 0.29,
-  STARTER_CARD_STAT_RIGHT_X: 0.71,
-  STARTER_CARD_STAT_Y: 0.44,
-  STARTER_CARD_DIM_ALPHA: 160,
-  STARTER_CARD_Y_OFFSET: 66,
-  WAITING_CUE_ICON_BASE_W: 92,
-  WAITING_CUE_BOX_PAD: 14,
-  WAITING_CUE_BOX_ALPHA: 150,
-  WAITING_CUE_BOX_RADIUS: 16,
-  WAITING_CUE_CENTER_Y_RATIO: 0.24,
-  DEATH_FACE_FRAME_COUNT: 36,
-  DEATH_FACE_SCALE: 1.08,
-  DEATH_FACE_RECOIL_START_FRAME: 6,
-  DEATH_FACE_TWITCH_START_FRAME: 17,
-  DEATH_FACE_TWITCH_FRAME_MS: 75,
-  DEATH_FACE_PRE_TWITCH_ANCHOR: -0.05,
-  DEATH_FACE_TWITCH_ANCHOR: -0.27,
-  DEATH_FACE_ANCHOR_BACK_SHIFT: -0.03,
-  DEATH_FACE_TWITCH_BLEND_FRAMES: 17,
-  DEATH_FACE_FRAME_LIFT: -0.10,
-  DEATH_FACE_UP_COLLISION_Y_NUDGE_TILES: 0.06,
-  EAT_SFX_VOLUME: 0.45,
-  EYE_SCALE: 1.15,
-  MOUTH_OPEN_AMOUNTS: [
-    0.0217, 0.304, 0.7612, 0.9276, 0.9433,
-    0.9638, 0.9735, 0.9843, 0.9916, 0.994,
-    1.0, 1.0, 0.889, 0.6671, 0.3028,
-  ],
-  DEATH_FACE_OFFSETS: [
-    [-8, 0], [-9, 0], [-11, 0], [-12, -1], [-9, 0], [-4, 0], [-3, 0], [-3, 0], [-2, 0],
-    [-2, 0], [-2, 0], [-1, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0],
-    [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0],
-    [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0],
-  ],
-  MOUTH_RECTS: [
-    [10, 17, 4, 17], [45, 10, 12, 35], [79, 6, 20, 42], [114, 5, 23, 44], [149, 5, 24, 44],
-    [185, 5, 25, 44], [221, 5, 25, 44], [257, 5, 25, 44], [293, 5, 25, 44], [329, 5, 25, 44],
-    [365, 5, 25, 44], [401, 5, 25, 44], [437, 5, 24, 44], [475, 7, 19, 40], [514, 10, 11, 35],
-  ],
-  TONGUE_RECTS: [
-    [5, 10, 8, 6], [54, 10, 23, 6], [103, 9, 34, 6], [152, 9, 38, 7], [201, 5, 38, 9],
-    [250, 6, 38, 8], [299, 12, 38, 6], [348, 12, 38, 7], [397, 6, 38, 8], [446, 12, 38, 6],
-    [495, 5, 38, 9], [544, 12, 38, 7], [593, 6, 38, 8], [642, 5, 38, 9], [691, 12, 38, 6],
-    [740, 12, 38, 7], [789, 9, 38, 6], [838, 5, 38, 9], [887, 9, 38, 7], [936, 9, 31, 6],
-    [985, 11, 13, 3],
-  ],
-  UI_CANVAS_METADATA: {
-    apple_icon: { canvas: [40, 40], offset: [8, 3] },
-    trophy: { canvas: [40, 40], offset: [8, 5] },
-    full_screen: { canvas: [40, 40], offset: [11, 10] },
-    not_full_screen: { canvas: [40, 36], offset: [6, 4] },
-    start_box: { canvas: [92, 84], offset: [23, 22] },
-  },
-};
-
-C.DEATH_SCREEN_DELAY_MS = Math.max(
-  0,
-  C.DEATH_OVERLAY_REVEAL_MS - (C.DEATH_FACE_COLLISION_INTRO_MS + C.DEATH_FACE_RECOIL_MS),
-);
-C.EYE_BLINK_MIN_SEC = Math.max(1.0, C.TONGUE_RATTLE_MIN_SEC * 0.5);
-C.EYE_BLINK_MAX_SEC = Math.max(C.EYE_BLINK_MIN_SEC, C.TONGUE_RATTLE_MAX_SEC * 0.5);
-C.EYE_BLINK_MODE_SEC = Math.max(C.EYE_BLINK_MIN_SEC, C.TONGUE_RATTLE_MODE_SEC * 0.5);
-
-const RIGHT = [1, 0];
-const LEFT = [-1, 0];
-const DOWN = [0, 1];
-const UP = [0, -1];
-
-const DIR_BY_KEY = new Map([
-  ["ArrowRight", RIGHT], ["KeyD", RIGHT],
-  ["ArrowLeft", LEFT], ["KeyA", LEFT],
-  ["ArrowDown", DOWN], ["KeyS", DOWN],
-  ["ArrowUp", UP], ["KeyW", UP],
-]);
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
+const SnakeGameShared = window.SnakeGameShared;
+if (!SnakeGameShared) {
+  throw new Error("Snake shared helpers failed to load.");
 }
 
-function lerpPt(a, b, t) {
-  return [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
-}
+const {
+  C,
+  DIR_BY_KEY,
+  DOWN,
+  LEFT,
+  RIGHT,
+  UP,
+  angleLerpShortest,
+  copySubImage,
+  createCanvas,
+  drawCapsule,
+  easeOutQuad,
+  lerp,
+  lerpPt,
+  loadAssets,
+  mixColor,
+  rgba,
+  rotatePoint,
+  scaleCanvas,
+  scaleCanvasFitWidth,
+  smoothstep,
+  triangleSample,
+  vecLen,
+} = SnakeGameShared;
 
-function smoothstep(t) {
-  const clamped = Math.max(0, Math.min(1, t));
-  return clamped * clamped * (3 - 2 * clamped);
-}
-
-function easeOutQuad(t) {
-  const clamped = Math.max(0, Math.min(1, t));
-  return 1 - (1 - clamped) * (1 - clamped);
-}
-
-function angleLerpShortest(a, b, t) {
-  const diff = ((b - a + 180) % 360 + 360) % 360 - 180;
-  return a + diff * t;
-}
-
-function mixColor(c1, c2, t) {
-  return [
-    Math.round(lerp(c1[0], c2[0], t)),
-    Math.round(lerp(c1[1], c2[1], t)),
-    Math.round(lerp(c1[2], c2[2], t)),
-  ];
-}
-
-function rgba(parts, alpha = 1) {
-  const [r, g, b] = parts;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function triangleSample(min, max, mode) {
-  const u = Math.random();
-  const f = (mode - min) / (max - min);
-  if (u < f) {
-    return min + Math.sqrt(u * (max - min) * (mode - min));
-  }
-  return max - Math.sqrt((1 - u) * (max - min) * (max - mode));
-}
-
-function vecLen(x, y) {
-  return Math.hypot(x, y);
-}
-
-function createCanvas(width, height) {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
-  return canvas;
-}
-
-function copySubImage(image, rect) {
-  const [sx, sy, sw, sh] = rect;
-  const canvas = createCanvas(sw, sh);
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
-  return canvas;
-}
-
-function scaleCanvas(source, scale) {
-  const canvas = createCanvas(source.width * scale, source.height * scale);
-  const ctx = canvas.getContext("2d");
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-  return canvas;
-}
-
-function scaleCanvasFitWidth(source, targetWidth) {
-  const width = Math.max(1, Math.round(targetWidth));
-  const height = Math.max(1, Math.round(source.height * width / source.width));
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(source, 0, 0, width, height);
-  return canvas;
-}
-
-function rotatePoint(cx, cy, px, py, angleDeg) {
-  const rad = angleDeg * Math.PI / 180;
-  const s = Math.sin(rad);
-  const c = Math.cos(rad);
-  const x = px - cx;
-  const y = py - cy;
-  return [cx + x * c - y * s, cy + x * s + y * c];
-}
-
-function drawCapsule(ctx, fillStyle, c1, c2, radius) {
-  const dx = c2[0] - c1[0];
-  const dy = c2[1] - c1[1];
-  const dist = Math.hypot(dx, dy);
-  ctx.fillStyle = fillStyle;
-  if (dist < 0.5) {
-    ctx.beginPath();
-    ctx.arc(c1[0], c1[1], radius, 0, Math.PI * 2);
-    ctx.fill();
-    return;
-  }
-  const nx = -dy / dist * radius;
-  const ny = dx / dist * radius;
-  ctx.beginPath();
-  ctx.moveTo(c1[0] + nx, c1[1] + ny);
-  ctx.lineTo(c1[0] - nx, c1[1] - ny);
-  ctx.lineTo(c2[0] - nx, c2[1] - ny);
-  ctx.lineTo(c2[0] + nx, c2[1] + ny);
-  ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(c1[0], c1[1], radius, 0, Math.PI * 2);
-  ctx.arc(c2[0], c2[1], radius, 0, Math.PI * 2);
-  ctx.fill();
-}
 
 class SnakeWeb {
   constructor() {
@@ -373,114 +134,7 @@ class SnakeWeb {
   }
 
   async loadAssets() {
-    const imageDefs = {
-      tile_light: "assets/images/light_green.png",
-      tile_dark: "assets/images/dark_green.png",
-      trophy: "assets/images/trophy.png",
-      apple_icon: "assets/images/apple_icon.png",
-      snake_card: "assets/images/Snake_card.png",
-      play_button: "assets/images/play_button.png",
-      start_box: "assets/images/start_box.png",
-      full_screen: "assets/images/full_screen.png",
-      not_full_screen: "assets/images/not_full_screen.png",
-      volume: "assets/images/volume.png",
-      volume_muted: "assets/images/muted.png",
-      mouth_strip: "assets/sprites/mouth_sprite.png",
-      tongue_strip: "assets/sprites/tongue_sprites.png",
-      eye_strip: "assets/sprites/eye_sprite.png",
-      death_strip: "assets/sprites/death_sprites.png",
-      collision_strip: "assets/sprites/collision_effects_sprite.png",
-    };
-    const entries = await Promise.all(
-      Object.entries(imageDefs).map(async ([key, path]) => [key, await this.loadImage(path)]),
-    );
-    this.raw = Object.fromEntries(entries);
-    this.restoreUICanvases();
-    this.buildSpriteFrames();
-    this.audio.turn = this.makeAudio("assets/audio/turn_sfx.mp3", 0.35);
-    this.audio.eat = this.makeAudio("assets/audio/eating.mp3", C.EAT_SFX_VOLUME);
-    this.audio.collision = this.makeAudio("assets/audio/end_audio DEATH.mp3", 0.75);
-  }
-
-  loadImage(path) {
-    return new Promise((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = reject;
-      image.src = path;
-    });
-  }
-
-  makeAudio(path, volume) {
-    const audio = new Audio(path);
-    audio.preload = "auto";
-    audio.volume = this.audioMuted ? 0 : volume;
-    return { el: audio, baseVolume: volume };
-  }
-
-  restoreUICanvases() {
-    for (const [name, meta] of Object.entries(C.UI_CANVAS_METADATA)) {
-      const source = this.raw[name];
-      if (!source) {
-        continue;
-      }
-      if (name === "start_box") {
-        this.assets[name] = scaleCanvasFitWidth(source, C.WAITING_CUE_ICON_BASE_W);
-        continue;
-      }
-      const [cw, ch] = meta.canvas;
-      if (source.width === cw && source.height === ch) {
-        this.assets[name] = source;
-        continue;
-      }
-      const canvas = createCanvas(cw, ch);
-      canvas.getContext("2d").drawImage(source, meta.offset[0], meta.offset[1]);
-      this.assets[name] = canvas;
-    }
-    for (const name of ["tile_light", "tile_dark", "snake_card", "play_button", "volume", "volume_muted"]) {
-      if (this.raw[name]) {
-        this.assets[name] = this.raw[name];
-      }
-    }
-  }
-
-  buildSpriteFrames() {
-    this.assets.apple_board = scaleCanvasFitWidth(this.assets.apple_icon, C.TILE_SIZE);
-    this.mouthFrames = C.MOUTH_RECTS.map((rect) => scaleCanvas(copySubImage(this.raw.mouth_strip, rect), C.MOUTH_SCALE));
-    this.mouthFrameOpenAmounts = C.MOUTH_OPEN_AMOUNTS.slice();
-    this.mouthPeakFrameIdx = this.mouthFrameOpenAmounts.reduce(
-      (best, value, idx, arr) => value > arr[best] ? idx : best,
-      0,
-    );
-    this.tongueFrames = C.TONGUE_RECTS.map((rect) => scaleCanvas(copySubImage(this.raw.tongue_strip, rect), C.TONGUE_SCALE));
-    this.eyeFrames = [];
-    const eyeFrameCount = 9;
-    const eyeFrameWidth = 28;
-    const eyeSep = 1;
-    for (let i = 0; i < eyeFrameCount; i += 1) {
-      const sx = i * (eyeFrameWidth + eyeSep);
-      this.eyeFrames.push(scaleCanvas(
-        copySubImage(this.raw.eye_strip, [sx, 0, eyeFrameWidth, this.raw.eye_strip.height]),
-        C.EYE_SCALE,
-      ));
-    }
-    this.deathFaceFrames = [];
-    for (let i = 0; i < C.DEATH_FACE_FRAME_COUNT; i += 1) {
-      const sx = i * (65 + 1);
-      const frame = createCanvas(65, 58);
-      const ctx = frame.getContext("2d");
-      const [dx, dy] = C.DEATH_FACE_OFFSETS[i];
-      ctx.drawImage(this.raw.death_strip, sx, 0, 65, 58, dx, dy, 65, 58);
-      this.deathFaceFrames.push(scaleCanvas(frame, C.DEATH_FACE_SCALE));
-    }
-    this.collisionEffectFrames = [];
-    const effectStrip = this.raw.collision_strip;
-    for (let i = 0; i < C.COLLISION_EFFECT_FRAME_COUNT; i += 1) {
-      const x0 = Math.round(i * effectStrip.width / C.COLLISION_EFFECT_FRAME_COUNT);
-      const x1 = Math.round((i + 1) * effectStrip.width / C.COLLISION_EFFECT_FRAME_COUNT);
-      const frame = copySubImage(effectStrip, [x0, 0, Math.max(1, x1 - x0), effectStrip.height]);
-      this.collisionEffectFrames.push(scaleCanvas(frame, C.COLLISION_EFFECT_SCALE));
-    }
+    await loadAssets(this);
   }
 
   resetOverlayState({ keepWaitingCue = false } = {}) {
@@ -723,9 +377,12 @@ class SnakeWeb {
   }
 
   radiusForSegmentFromHead(segFromHead, baseR) {
-    const minR = Math.max(1, Math.floor(baseR * C.TAIL_MIN_RADIUS_FACTOR));
+    const safeBaseR = Math.max(1, Number(baseR) || 1);
+    const minR = Math.max(1, safeBaseR * C.TAIL_MIN_RADIUS_FACTOR);
     const taperSeg = Math.max(0, segFromHead - (C.START_SNAKE_SEGMENTS - 1));
-    return Math.max(minR, Math.floor(baseR - taperSeg * C.SEGMENT_SHRINK_PER_SEG));
+    const taperSpanSegments = Math.max(1e-6, (safeBaseR - minR) / C.SEGMENT_SHRINK_PER_SEG);
+    const taperProgress = Math.max(0, Math.min(1, taperSeg / taperSpanSegments));
+    return Math.max(minR, lerp(safeBaseR, minR, smoothstep(taperProgress)));
   }
 
   radiusForArcFromHeadPx(arcFromHeadPx, tileSize, baseR) {
@@ -2308,7 +1965,7 @@ class SnakeWeb {
         const decayPx = Math.max(1, bulge.decaySegments * lay.tileSize);
         const t = Math.max(0, Math.min(1, d / decayPx));
         const scale = lerp(bulge.startScale, bulge.endScale, smoothstep(t));
-        const br = Math.max(1, Math.round(localR * scale));
+        const br = Math.max(1, localR * scale);
         const bulgeFrac = Math.max(0, Math.min(1, arcFromTail / body.total));
         this.ctx.fillStyle = rgba(mixColor(tailColor, headColor, bulgeFrac));
         this.ctx.beginPath();

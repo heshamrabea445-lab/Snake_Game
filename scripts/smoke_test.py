@@ -39,6 +39,58 @@ def run_smoke_test():
         assert game.show_waiting_start_cue, "play should show the waiting cue"
         assert not game.starter_card_visible, "play should hide the starter card"
 
+        game.score = 1
+        game.high_score = max(game.high_score, game.score)
+        show_trophy_before_restart = (
+            game.trophy_unlocked_after_restart
+            and game.high_score > 0
+            and not (game.starter_card_visible and game.starter_card_context == "launch")
+        )
+        assert not show_trophy_before_restart, "header trophy should stay hidden before a scoring run is restarted"
+
+        game.high_score = 8
+        game.score = 3
+        game.game_state = "dead"
+        game.starter_card_context = "death"
+        game.starter_card_visible = True
+        game.show_waiting_start_cue = False
+        game._handle_starter_card_play()
+        assert game.trophy_unlocked_after_restart, "death-card restart should unlock trophy display"
+        assert game.game_state == "waiting", "death-card restart should reset into waiting state"
+        assert game.score == 0, "death-card restart should reset the run score"
+        assert game.high_score == 8, "death-card restart should keep the best score"
+        assert not game.starter_card_visible, "death-card restart should not show the launch card"
+
+        game.trophy_unlocked_after_restart = False
+        game.high_score = 0
+        game.score = 0
+        game.game_state = "dead"
+        game.starter_card_context = "death"
+        game.starter_card_visible = True
+        game.show_waiting_start_cue = False
+        game._handle_starter_card_play()
+        assert not game.trophy_unlocked_after_restart, "zero-score death restart should not unlock the trophy"
+
+        game.high_score = 5
+        game.score = 2
+        game.game_state = "dead"
+        game.starter_card_visible = False
+        handled = game._handle_key_down(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r))
+        assert handled, "R on the death screen should trigger a restart"
+        assert game.trophy_unlocked_after_restart, "keyboard restart should keep trophy display unlocked"
+        assert game.game_state == "waiting", "keyboard restart should reset into waiting state"
+        assert game.score == 0, "keyboard restart should reset the run score"
+        assert game.high_score == 5, "keyboard restart should keep the best score"
+
+        game.trophy_unlocked_after_restart = False
+        game.high_score = 0
+        game.score = 0
+        game.game_state = "dead"
+        game.starter_card_visible = False
+        handled = game._handle_key_down(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r))
+        assert handled, "R on the death screen should still be handled for zero-score runs"
+        assert not game.trophy_unlocked_after_restart, "zero-score keyboard restart should not unlock the trophy"
+
         game._toggle_fullscreen()
         game._toggle_audio_mute()
         game._ensure_assets()
